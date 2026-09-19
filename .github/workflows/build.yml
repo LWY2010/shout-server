@@ -26,6 +26,9 @@ jobs:
       - name: Build screen.exe
         run: pyinstaller -F -w --collect-all edge_tts --collect-all pygame screen.py
 
+      - name: Build reset_pwd.exe
+        run: pyinstaller -F -w reset_pwd.py
+
       - name: Upload EXE files
         uses: actions/upload-artifact@v4
         with:
@@ -33,3 +36,4 @@ jobs:
           path: |
             dist/teacher.exe
             dist/screen.exe
+            dist/reset_pwd.exe
