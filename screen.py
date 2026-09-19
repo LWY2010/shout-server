@@ -20,7 +20,6 @@ VOICE = "zh-CN-XiaoxiaoNeural"
 
 pygame.mixer.init()
 
-# 用于控制打断：每次新消息递增，播放线程检查是否过期
 current_play_id = 0
 play_id_lock = threading.Lock()
 
@@ -30,17 +29,61 @@ class ScreenApp:
         self.root = tk.Tk()
         self.root.title("班级大屏")
         self.root.configure(bg="black")
-        self.root.withdraw()
 
+        # 启动提示窗口（小窗，居中）
+        self.show_startup_window()
+
+        # 真正的显示标签（用于喊话）
+        self.label = tk.Label(
+            self.root, text="", font=("微软雅黑", 72, "bold"),
+            fg="yellow", bg="black", wraplength=1700, justify="center"
+        )
+
+        self.root.bind("<Escape>", lambda e: self.hide())
+
+        threading.Thread(target=self.listen, daemon=True).start()
+        self.root.mainloop()
+
+    def show_startup_window(self):
+        """开机启动时显示的小提示窗口"""
+        self.root.geometry("400x200")
+        self.root.resizable(False, False)
+
+        # 居中显示
+        self.root.update_idletasks()
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x = (screen_w - 400) // 2
+        y = (screen_h - 200) // 2
+        self.root.geometry(f"400x200+{x}+{y}")
+
+        self.startup_label = tk.Label(
+            self.root,
+            text="✅ 教室大屏已启动\n\n正在后台等待喊话...\n\n点击下方按钮关闭此提示",
+            font=("微软雅黑", 14),
+            fg="white", bg="black", justify="center"
+        )
+        self.startup_label.pack(expand=True, pady=10)
+
+        tk.Button(
+            self.root, text="关闭提示",
+            font=("微软雅黑", 12),
+            bg="#4CAF50", fg="white",
+            command=self.close_startup
+        ).pack(pady=10)
+
+    def close_startup(self):
+        """关闭启动提示，进入后台待命"""
+        self.startup_label.destroy()
+        for w in self.root.winfo_children():
+            w.destroy()
+        # 重新挂上喊话用的 label
         self.label = tk.Label(
             self.root, text="", font=("微软雅黑", 72, "bold"),
             fg="yellow", bg="black", wraplength=1700, justify="center"
         )
         self.label.pack(expand=True)
-        self.root.bind("<Escape>", lambda e: self.hide())
-
-        threading.Thread(target=self.listen, daemon=True).start()
-        self.root.mainloop()
+        self.root.withdraw()   # 隐藏到后台
 
     def listen(self):
         loop = asyncio.new_event_loop()
@@ -65,18 +108,14 @@ class ScreenApp:
         self.root.lift()
         self.root.focus_force()
         threading.Thread(target=self.speak, args=(text,), daemon=True).start()
-        self.root.after(8000, self.hide)
 
     def speak(self, text):
-        """合成并播放语音，新消息会立刻打断旧消息"""
         global current_play_id
 
-        # 生成本次播放的唯一 ID
         with play_id_lock:
             current_play_id += 1
             my_id = current_play_id
 
-        # 先立即打断当前正在播放的语音
         try:
             pygame.mixer.music.stop()
         except Exception:
@@ -89,14 +128,12 @@ class ScreenApp:
                 f"shout_{uuid.uuid4().hex}.mp3"
             )
 
-            # 合成语音
             async def _tts():
                 communicate = edge_tts.Communicate(text, VOICE)
                 await communicate.save(tmp)
 
             asyncio.run(_tts())
 
-            # 合成期间如果来了新消息，直接放弃本次播放
             with play_id_lock:
                 if my_id != current_play_id:
                     if tmp and os.path.exists(tmp):
@@ -106,7 +143,6 @@ class ScreenApp:
                             pass
                     return
 
-            # 再次确保没有更新的消息
             try:
                 pygame.mixer.music.stop()
             except Exception:
@@ -115,7 +151,6 @@ class ScreenApp:
             pygame.mixer.music.load(tmp)
             pygame.mixer.music.play()
 
-            # 边播边检查是否被新消息打断
             while pygame.mixer.music.get_busy():
                 with play_id_lock:
                     if my_id != current_play_id:
@@ -123,14 +158,23 @@ class ScreenApp:
                         break
                 pygame.time.Clock().tick(10)
 
+            with play_id_lock:
+                if my_id == current_play_id:
+                    self.root.after(0, self.hide)
+
         except Exception as e:
             print("语音播放失败:", e)
+            self.root.after(0, self.hide)
         finally:
             if tmp and os.path.exists(tmp):
                 try:
                     os.remove(tmp)
                 except Exception:
                     pass
+
+    def hide(self):
+        self.root.attributes("-fullscreen", False)
+        self.root.withdraw()
 
 
 if __name__ == "__main__":
