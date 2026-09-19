@@ -4,24 +4,69 @@ import tkinter as tk
 import websockets
 import edge_tts
 import os
+import sys
 import tempfile
 import pygame
 import uuid
+import winreg
 
 SERVER = "wss://shout-server-production.up.railway.app"
 
-# Edge TTS 音色，可自行替换
 VOICE = "zh-CN-XiaoxiaoNeural"
-# 其他可选：
-# zh-CN-YunxiNeural    男声，阳光
-# zh-CN-YunyangNeural  男声，新闻播报
-# zh-CN-XiaoyiNeural   女声，活泼
-# zh-CN-liaoning-XiaobeiNeural  东北话女声
 
 pygame.mixer.init()
 
 current_play_id = 0
 play_id_lock = threading.Lock()
+
+APP_NAME = "ClassroomScreen"   # 启动项里的名字，不要改
+
+
+def is_autostart_enabled():
+    """检查当前是否已在启动项里"""
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_QUERY_VALUE
+        )
+        try:
+            winreg.QueryValueEx(key, APP_NAME)
+            winreg.CloseKey(key)
+            return True
+        except FileNotFoundError:
+            winreg.CloseKey(key)
+            return False
+    except Exception:
+        return False
+
+
+def set_autostart(enable=True):
+    """开启或关闭开机自启"""
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_SET_VALUE
+        )
+        if enable:
+            if getattr(sys, "frozen", False):
+                exe_path = sys.executable
+            else:
+                exe_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, exe_path)
+            print("已设置开机自启")
+        else:
+            try:
+                winreg.DeleteValue(key, APP_NAME)
+                print("已取消开机自启")
+            except FileNotFoundError:
+                pass
+        winreg.CloseKey(key)
+    except Exception as e:
+        print("设置开机自启失败:", e)
 
 
 class ScreenApp:
@@ -30,10 +75,8 @@ class ScreenApp:
         self.root.title("班级大屏")
         self.root.configure(bg="black")
 
-        # 启动提示窗口（小窗，居中）
         self.show_startup_window()
 
-        # 真正的显示标签（用于喊话）
         self.label = tk.Label(
             self.root, text="", font=("微软雅黑", 72, "bold"),
             fg="yellow", bg="black", wraplength=1700, justify="center"
@@ -45,45 +88,66 @@ class ScreenApp:
         self.root.mainloop()
 
     def show_startup_window(self):
-        """开机启动时显示的小提示窗口"""
-        self.root.geometry("400x200")
+        self.root.geometry("440x260")
         self.root.resizable(False, False)
 
-        # 居中显示
         self.root.update_idletasks()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        x = (screen_w - 400) // 2
-        y = (screen_h - 200) // 2
-        self.root.geometry(f"400x200+{x}+{y}")
+        x = (screen_w - 440) // 2
+        y = (screen_h - 260) // 2
+        self.root.geometry(f"440x260+{x}+{y}")
 
-        self.startup_label = tk.Label(
+        tk.Label(
             self.root,
-            text="✅ 教室大屏已启动\n\n正在后台等待喊话...\n\n点击下方按钮关闭此提示",
-            font=("微软雅黑", 14),
-            fg="white", bg="black", justify="center"
-        )
-        self.startup_label.pack(expand=True, pady=10)
+            text="✅ 教室大屏已启动",
+            font=("微软雅黑", 16, "bold"),
+            fg="white", bg="black"
+        ).pack(pady=(18, 6))
+
+        tk.Label(
+            self.root,
+            text="正在后台等待喊话...",
+            font=("微软雅黑", 12),
+            fg="gray", bg="black"
+        ).pack()
+
+        # 开机自启勾选框
+        self.autostart_var = tk.BooleanVar(value=is_autostart_enabled())
+        tk.Checkbutton(
+            self.root,
+            text="开机自动启动",
+            variable=self.autostart_var,
+            font=("微软雅黑", 12),
+            fg="white", bg="black",
+            selectcolor="#333",
+            activebackground="black",
+            activeforeground="white"
+        ).pack(pady=15)
 
         tk.Button(
             self.root, text="关闭提示",
             font=("微软雅黑", 12),
             bg="#4CAF50", fg="white",
+            width=12,
             command=self.close_startup
-        ).pack(pady=10)
+        ).pack(pady=5)
 
     def close_startup(self):
-        """关闭启动提示，进入后台待命"""
-        self.startup_label.destroy()
+        # 按勾选状态设置自启
+        set_autostart(self.autostart_var.get())
+
+        # 清空窗口控件
         for w in self.root.winfo_children():
             w.destroy()
-        # 重新挂上喊话用的 label
+
+        # 重建喊话用的 label
         self.label = tk.Label(
             self.root, text="", font=("微软雅黑", 72, "bold"),
             fg="yellow", bg="black", wraplength=1700, justify="center"
         )
         self.label.pack(expand=True)
-        self.root.withdraw()   # 隐藏到后台
+        self.root.withdraw()
 
     def listen(self):
         loop = asyncio.new_event_loop()
