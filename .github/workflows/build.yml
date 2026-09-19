@@ -1,0 +1,35 @@
+name: Build EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller pywin32 websockets
+
+      - name: Build teacher.exe
+        run: pyinstaller -F -w teacher.py
+
+      - name: Build screen.exe
+        run: pyinstaller -F -w --hidden-import win32com.client screen.py
+
+      - name: Upload EXE files
+        uses: actions/upload-artifact@v4
+        with:
+          name: shout-exe
+          path: |
+            dist/teacher.exe
+            dist/screen.exe
