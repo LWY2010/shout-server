@@ -18,13 +18,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller pywin32 websockets
+          pip install pyinstaller websockets edge-tts pygame
 
       - name: Build teacher.exe
         run: pyinstaller -F -w teacher.py
 
       - name: Build screen.exe
-        run: pyinstaller -F -w --hidden-import win32com.client screen.py
+        run: pyinstaller -F -w --collect-all edge_tts --collect-all pygame screen.py
 
       - name: Upload EXE files
         uses: actions/upload-artifact@v4
