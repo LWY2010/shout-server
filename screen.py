@@ -2,7 +2,7 @@ import asyncio
 import json
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 import websockets
 import edge_tts
 import os
@@ -26,12 +26,35 @@ play_id_lock = threading.Lock()
 APP_NAME = "ClassroomScreen"
 
 
-def get_config_path():
+# ---------- 路径 / 配置 ----------
+def get_base_dir():
     if getattr(sys, "frozen", False):
-        base_dir = os.path.dirname(sys.executable)
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_dir, "room.json")
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_config_path():
+    return os.path.join(get_base_dir(), "room.json")
+
+
+def get_auth_path():
+    return os.path.join(get_base_dir(), "auth.dat")
+
+
+def load_password():
+    path = get_auth_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                pwd = f.read().strip()
+                if pwd:
+                    return pwd
+        except Exception:
+            pass
+    return "01180204"
+
+
+RESET_PASSWORD = load_password()
 
 
 def load_room():
@@ -208,6 +231,21 @@ class ScreenApp:
                   command=self.reset_room).pack(side="left", padx=5)
 
     def reset_room(self):
+        global RESET_PASSWORD
+        pwd = simpledialog.askstring(
+            "请输入管理密码",
+            "清除配置需要密码，请联系管理员：",
+            show="*",
+            parent=self.root
+        )
+        if pwd is None:
+            return
+        # 每次点击实时读一次密码，避免改密码后必须重启
+        RESET_PASSWORD = load_password()
+        if pwd != RESET_PASSWORD:
+            messagebox.showerror("错误", "密码错误")
+            return
+
         if not messagebox.askyesno("确认", "确定要清除当前班级配置，重新选择吗？"):
             return
         clear_room()
