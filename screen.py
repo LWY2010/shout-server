@@ -6,6 +6,7 @@ import edge_tts
 import os
 import tempfile
 import pygame
+import uuid
 
 SERVER = "wss://shout-server-production.up.railway.app"
 
@@ -18,6 +19,11 @@ VOICE = "zh-CN-XiaoxiaoNeural"
 # zh-CN-liaoning-XiaobeiNeural  东北话女声
 
 pygame.mixer.init()
+
+# 用于控制打断：每次新消息递增，播放线程检查是否过期
+current_play_id = 0
+play_id_lock = threading.Lock()
+
 
 class ScreenApp:
     def __init__(self):
@@ -62,25 +68,70 @@ class ScreenApp:
         self.root.after(8000, self.hide)
 
     def speak(self, text):
-        try:
-            tmp = os.path.join(tempfile.gettempdir(), "shout_voice.mp3")
+        """合成并播放语音，新消息会立刻打断旧消息"""
+        global current_play_id
 
+        # 生成本次播放的唯一 ID
+        with play_id_lock:
+            current_play_id += 1
+            my_id = current_play_id
+
+        # 先立即打断当前正在播放的语音
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
+
+        tmp = None
+        try:
+            tmp = os.path.join(
+                tempfile.gettempdir(),
+                f"shout_{uuid.uuid4().hex}.mp3"
+            )
+
+            # 合成语音
             async def _tts():
                 communicate = edge_tts.Communicate(text, VOICE)
                 await communicate.save(tmp)
 
             asyncio.run(_tts())
 
+            # 合成期间如果来了新消息，直接放弃本次播放
+            with play_id_lock:
+                if my_id != current_play_id:
+                    if tmp and os.path.exists(tmp):
+                        try:
+                            os.remove(tmp)
+                        except Exception:
+                            pass
+                    return
+
+            # 再次确保没有更新的消息
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
+
             pygame.mixer.music.load(tmp)
             pygame.mixer.music.play()
+
+            # 边播边检查是否被新消息打断
             while pygame.mixer.music.get_busy():
+                with play_id_lock:
+                    if my_id != current_play_id:
+                        pygame.mixer.music.stop()
+                        break
                 pygame.time.Clock().tick(10)
+
         except Exception as e:
             print("语音播放失败:", e)
+        finally:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
 
-    def hide(self):
-        self.root.attributes("-fullscreen", False)
-        self.root.withdraw()
 
 if __name__ == "__main__":
     ScreenApp()
