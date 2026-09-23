@@ -30,10 +30,15 @@ play_id_lock = threading.Lock()
 APP_NAME = "ClassroomScreen"
 
 MIN_DISPLAY_SECONDS = 20
+STARTUP_WINDOW_SECONDS = 5     # 启动窗口显示时长（秒）
 
 SINGLE_INSTANCE_PORT = 18888
 
+# 数据固定存放目录
+DATA_DIR = r"C:\ClassroomShout"
 
+
+# ---------- 单实例 ----------
 def try_acquire_single_instance():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -59,18 +64,22 @@ def notify_existing_instance():
         print("通知已有实例失败:", e)
 
 
-def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+# ---------- 路径 / 配置 ----------
+def ensure_data_dir():
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except Exception as e:
+        print("创建数据目录失败:", e)
 
 
 def get_config_path():
-    return os.path.join(get_base_dir(), "room.json")
+    ensure_data_dir()
+    return os.path.join(DATA_DIR, "room.json")
 
 
 def get_auth_path():
-    return os.path.join(get_base_dir(), "auth.dat")
+    ensure_data_dir()
+    return os.path.join(DATA_DIR, "auth.dat")
 
 
 def load_password():
@@ -154,6 +163,7 @@ def set_autostart(enable=True):
         print("设置开机自启失败:", e)
 
 
+# ---------- 托盘 ----------
 def make_tray_image():
     img = Image.new("RGB", (64, 64), color="black")
     d = ImageDraw.Draw(img)
@@ -265,6 +275,10 @@ class ScreenApp:
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         x, y = (sw - 480) // 2, (sh - 320) // 2
         self.root.geometry(f"480x320+{x}+{y}")
+        self.root.deiconify()
+        self.root.lift()
+        self.root.attributes("-topmost", True)
+        self.root.after(500, lambda: self.root.attributes("-topmost", False))
 
         tk.Label(self.root, text="请选择本教室的班级",
                  font=("微软雅黑", 16, "bold"), fg="white", bg="black").pack(pady=20)
@@ -308,6 +322,13 @@ class ScreenApp:
         x, y = (sw - 480) // 2, (sh - 360) // 2
         self.root.geometry(f"480x360+{x}+{y}")
 
+        # 前台显示
+        self.root.deiconify()
+        self.root.lift()
+        self.root.attributes("-topmost", True)
+        self.root.focus_force()
+        self.root.after(1000, lambda: self.root.attributes("-topmost", False))
+
         tk.Label(self.root, text="✅ 教室大屏已启动",
                  font=("微软雅黑", 16, "bold"), fg="white", bg="black").pack(pady=(15, 4))
         tk.Label(self.root, text=f"班级：{self.room_id}",
@@ -336,7 +357,7 @@ class ScreenApp:
                   command=self.reset_room).pack(side="left", padx=5)
 
         self.startup_done = False
-        self.root.after(10000, self._auto_close_startup)
+        self.root.after(STARTUP_WINDOW_SECONDS * 1000, self._auto_close_startup)
 
     def _auto_close_startup(self):
         if not self.startup_done:
@@ -351,7 +372,6 @@ class ScreenApp:
         for w in self.root.winfo_children():
             w.destroy()
 
-        # 喊话展示区：顶部显示发送者，下方显示内容
         self.sender_label = tk.Label(
             self.root, text="",
             font=("微软雅黑", 28, "bold"),
@@ -445,7 +465,6 @@ class ScreenApp:
             return
         size, wrap = self.calc_font_and_wrap(text)
 
-        # 顶部显示发送者
         if self.sender_label and self.sender_label.winfo_exists():
             if sender:
                 self.sender_label.config(text=f"来自 {sender}")
