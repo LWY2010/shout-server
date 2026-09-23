@@ -1,458 +1,109 @@
 import asyncio
 import json
-import threading
-import time
-import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
-import websockets
-import edge_tts
 import os
-import sys
-import tempfile
-import pygame
-import uuid
-import winreg
-import pystray
-from PIL import Image, ImageDraw
-
-SERVER = "wss://shout-server-production.up.railway.app"
-VOICE = "zh-CN-XiaoxiaoNeural"
+import websockets
 
 GRADES = ["高一", "高二", "高三"]
 CLASS_NUMS = list(range(1, 17))
 
-pygame.mixer.init()
+def all_rooms():
+    rooms = []
+    for g in GRADES:
+        for n in CLASS_NUMS:
+            rooms.append({"room_id": f"{g}{n}班", "name": f"{g}{n}班"})
+    return rooms
 
-current_play_id = 0
-play_id_lock = threading.Lock()
+ROOMS = {r["room_id"]: r for r in all_rooms()}
 
-APP_NAME = "ClassroomScreen"
+teachers_online = {}
+rooms_online = {}
 
-MIN_DISPLAY_SECONDS = 20
-
-
-def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def get_config_path():
-    return os.path.join(get_base_dir(), "room.json")
-
-
-def get_auth_path():
-    return os.path.join(get_base_dir(), "auth.dat")
-
-
-def load_password():
-    path = get_auth_path()
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                pwd = f.read().strip()
-                if pwd:
-                    return pwd
-        except Exception:
-            pass
-    return "01180204"
-
-
-def load_room():
-    path = get_config_path()
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                d = json.load(f)
-                rid = d.get("room_id")
-                if rid:
-                    return rid
-        except Exception:
-            pass
-    return None
-
-
-def save_room(room_id):
+async def send_json(ws, obj):
     try:
-        with open(get_config_path(), "w", encoding="utf-8") as f:
-            json.dump({"room_id": room_id}, f, ensure_ascii=False)
-    except Exception as e:
-        print("保存班级配置失败:", e)
-
-
-def clear_room():
-    try:
-        path = get_config_path()
-        if os.path.exists(path):
-            os.remove(path)
-    except Exception as e:
-        print("清除配置失败:", e)
-
-
-def is_autostart_enabled():
-    try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r"Software\Microsoft\Windows\CurrentVersion\Run",
-                             0, winreg.KEY_QUERY_VALUE)
-        try:
-            winreg.QueryValueEx(key, APP_NAME)
-            winreg.CloseKey(key)
-            return True
-        except FileNotFoundError:
-            winreg.CloseKey(key)
-            return False
+        await ws.send(json.dumps(obj, ensure_ascii=False))
     except Exception:
-        return False
+        pass
 
+def online_room_ids():
+    return list(set(info["room_id"] for info in rooms_online.values()))
 
-def set_autostart(enable=True):
+async def broadcast_room_status():
+    ids = online_room_ids()
+    for tws in list(teachers_online.keys()):
+        await send_json(tws, {"type": "room_status", "online": ids})
+
+async def handler(ws):
+    role = None
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r"Software\Microsoft\Windows\CurrentVersion\Run",
-                             0, winreg.KEY_SET_VALUE)
-        if enable:
-            if getattr(sys, "frozen", False):
-                exe_path = sys.executable
-            else:
-                exe_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
-            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, exe_path)
-        else:
+        async for raw in ws:
             try:
-                winreg.DeleteValue(key, APP_NAME)
-            except FileNotFoundError:
-                pass
-        winreg.CloseKey(key)
-    except Exception as e:
-        print("设置开机自启失败:", e)
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            action = msg.get("action")
 
+            if action == "teacher_login":
+                username = msg.get("username", "").strip() or "老师"
+                role = "teacher"
+                teachers_online[ws] = {"username": username}
+                await send_json(ws, {
+                    "type": "login_ok",
+                    "username": username,
+                    "rooms": list(ROOMS.values())
+                })
+                await send_json(ws, {
+                    "type": "room_status",
+                    "online": online_room_ids()
+                })
 
-def make_tray_image():
-    img = Image.new("RGB", (64, 64), color="black")
-    d = ImageDraw.Draw(img)
-    d.rectangle([12, 12, 52, 52], fill="#FFD700")
-    d.rectangle([20, 20, 44, 44], fill="black")
-    return img
-
-
-def run_tray(app):
-    def on_quit(icon, item):
-        try:
-            icon.stop()
-        except Exception:
-            pass
-        try:
-            app.root.quit()
-            app.root.destroy()
-        except Exception:
-            pass
-
-    menu = pystray.Menu(
-        pystray.MenuItem("退出程序", on_quit),
-    )
-    icon = pystray.Icon("ClassroomScreen", make_tray_image(), "教室大屏", menu)
-    app.tray_icon = icon
-    icon.run()
-
-
-class ScreenApp:
-    def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("班级大屏")
-        self.root.configure(bg="black")
-
-        self.room_id = None
-        self.label = None
-        self.ws = None
-        self.state_label = None
-        self.tray_icon = None
-        self.startup_done = True
-
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close_attempt)
-
-        if "--reset" in sys.argv:
-            clear_room()
-            print("已清除班级配置")
-
-        self.room_id = load_room()
-
-        if self.room_id is None:
-            self.show_select_window()
-        else:
-            self.show_startup_window()
-
-        self.root.bind("<Escape>", lambda e: self.hide())
-
-        threading.Thread(target=run_tray, args=(self,), daemon=True).start()
-        threading.Thread(target=self.listen, daemon=True).start()
-
-        self.root.mainloop()
-
-    def on_close_attempt(self):
-        if not self.startup_done:
-            self.close_startup()
-        else:
-            self.hide()
-
-    def show_select_window(self):
-        for w in self.root.winfo_children():
-            w.destroy()
-        self.root.geometry("480x320")
-        self.root.resizable(False, False)
-        self.root.update_idletasks()
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        x, y = (sw - 480) // 2, (sh - 320) // 2
-        self.root.geometry(f"480x320+{x}+{y}")
-
-        tk.Label(self.root, text="请选择本教室的班级",
-                 font=("微软雅黑", 16, "bold"), fg="white", bg="black").pack(pady=20)
-
-        row = tk.Frame(self.root, bg="black")
-        row.pack(pady=10)
-
-        self.grade_var = tk.StringVar(value="高一")
-        grade_cb = ttk.Combobox(row, textvariable=self.grade_var,
-                                values=GRADES, state="readonly",
-                                font=("微软雅黑", 12), width=6)
-        grade_cb.pack(side="left", padx=6)
-
-        self.num_var = tk.StringVar(value="1班")
-        num_cb = ttk.Combobox(row, textvariable=self.num_var,
-                              values=[f"{n}班" for n in CLASS_NUMS],
-                              state="readonly",
-                              font=("微软雅黑", 12), width=6)
-        num_cb.pack(side="left", padx=6)
-
-        tk.Button(self.root, text="确定",
-                  font=("微软雅黑", 13), width=10,
-                  bg="#4CAF50", fg="white",
-                  command=self.confirm_room).pack(pady=20)
-
-    def confirm_room(self):
-        rid = f"{self.grade_var.get()}{self.num_var.get()}"
-        save_room(rid)
-        self.room_id = rid
-        for w in self.root.winfo_children():
-            w.destroy()
-        self.show_startup_window()
-
-    def show_startup_window(self):
-        for w in self.root.winfo_children():
-            w.destroy()
-        self.root.geometry("480x360")
-        self.root.resizable(False, False)
-        self.root.update_idletasks()
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        x, y = (sw - 480) // 2, (sh - 360) // 2
-        self.root.geometry(f"480x360+{x}+{y}")
-
-        tk.Label(self.root, text="✅ 教室大屏已启动",
-                 font=("微软雅黑", 16, "bold"), fg="white", bg="black").pack(pady=(15, 4))
-        tk.Label(self.root, text=f"班级：{self.room_id}",
-                 font=("微软雅黑", 13, "bold"), fg="#FFD700", bg="black").pack(pady=4)
-
-        self.state_label = tk.Label(self.root, text="正在连接服务器...",
-                                    font=("微软雅黑", 11), fg="orange", bg="black")
-        self.state_label.pack(pady=8)
-
-        self.autostart_var = tk.BooleanVar(value=is_autostart_enabled())
-        tk.Checkbutton(self.root, text="开机自动启动",
-                       variable=self.autostart_var,
-                       font=("微软雅黑", 11),
-                       fg="white", bg="black", selectcolor="#333",
-                       activebackground="black", activeforeground="white").pack(pady=6)
-
-        btn_row = tk.Frame(self.root, bg="black")
-        btn_row.pack(pady=6)
-        tk.Button(btn_row, text="关闭提示，进入后台",
-                  font=("微软雅黑", 11),
-                  bg="#4CAF50", fg="white",
-                  command=self.close_startup).pack(side="left", padx=5)
-        tk.Button(btn_row, text="重新选择班级",
-                  font=("微软雅黑", 11),
-                  bg="#FF9800", fg="white",
-                  command=self.reset_room).pack(side="left", padx=5)
-
-        self.startup_done = False
-        self.root.after(10000, self._auto_close_startup)
-
-    def _auto_close_startup(self):
-        if not self.startup_done:
-            self.close_startup()
-
-    def close_startup(self):
-        self.startup_done = True
-        try:
-            set_autostart(self.autostart_var.get())
-        except Exception:
-            pass
-        for w in self.root.winfo_children():
-            w.destroy()
-        self.label = tk.Label(self.root, text="",
-                              font=("微软雅黑", 72, "bold"),
-                              fg="yellow", bg="black",
-                              wraplength=1700, justify="center")
-        self.label.pack(expand=True)
-        self.root.withdraw()
-
-    def reset_room(self):
-        pwd = simpledialog.askstring(
-            "请输入管理密码",
-            "清除配置需要密码，请联系管理员：",
-            show="*",
-            parent=self.root
-        )
-        if pwd is None:
-            return
-        if pwd != load_password():
-            messagebox.showerror("错误", "密码错误")
-            return
-        if not messagebox.askyesno("确认", "确定要清除当前班级配置，重新选择吗？"):
-            return
-        clear_room()
-        self.room_id = None
-        self.show_select_window()
-
-    def set_state_online(self):
-        if self.state_label and self.state_label.winfo_exists():
-            self.state_label.config(text="✅ 已连接服务器", fg="green")
-
-    def listen(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self._listen())
-
-    async def _listen(self):
-        while True:
-            try:
-                if not self.room_id:
-                    await asyncio.sleep(1)
+            elif action == "shout":
+                if ws not in teachers_online:
                     continue
-                async with websockets.connect(SERVER) as ws:
-                    self.ws = ws
-                    await ws.send(json.dumps({
-                        "action": "room_hello",
-                        "room_id": self.room_id
-                    }, ensure_ascii=False))
-                    async for raw in ws:
-                        msg = json.loads(raw)
-                        if msg.get("type") == "room_ok":
-                            self.root.after(0, self.set_state_online)
-                        elif msg.get("type") == "shout":
-                            text = msg.get("text", "")
-                            self.root.after(0, lambda t=text: self.show(t))
-            except Exception:
-                await asyncio.sleep(3)
+                room_ids = msg.get("room_ids", [])
+                text = msg.get("text", "").strip()
+                show_sender = bool(msg.get("show_sender", False))
+                if not text or not room_ids:
+                    continue
+                sender = teachers_online[ws]["username"]
+                payload = {
+                    "type": "shout",
+                    "text": text,
+                    "sender": sender if show_sender else "",
+                }
+                sent = 0
+                for rws, info in list(rooms_online.items()):
+                    if info["room_id"] in room_ids:
+                        await send_json(rws, payload)
+                        sent += 1
+                await send_json(ws, {"type": "sent", "count": sent})
 
-    def calc_font_and_wrap(self, text):
-        n = len(text)
-        if n <= 3:
-            size = 160
-        elif n <= 6:
-            size = 130
-        elif n <= 10:
-            size = 110
-        elif n <= 20:
-            size = 85
-        elif n <= 35:
-            size = 65
-        elif n <= 60:
-            size = 50
-        elif n <= 100:
-            size = 38
-        else:
-            size = 30
-        wrap = self.root.winfo_screenwidth() - 200
-        return size, wrap
+            elif action == "room_hello":
+                room_id = msg.get("room_id", "").strip()
+                if room_id not in ROOMS:
+                    await send_json(ws, {"type": "error", "msg": f"未知班级：{room_id}"})
+                    continue
+                role = "room"
+                rooms_online[ws] = {"room_id": room_id}
+                await send_json(ws, {
+                    "type": "room_ok",
+                    "room_id": room_id,
+                    "name": room_id
+                })
+                await broadcast_room_status()
 
-    def show(self, text):
-        if not self.label:
-            return
-        size, wrap = self.calc_font_and_wrap(text)
-        self.label.config(text=text,
-                          font=("微软雅黑", size, "bold"),
-                          wraplength=wrap,
-                          justify="center")
-        self.root.deiconify()
-        self.root.attributes("-fullscreen", True)
-        self.root.lift()
-        self.root.focus_force()
-        threading.Thread(target=self.play_and_wait, args=(text,), daemon=True).start()
+    except websockets.ConnectionClosed:
+        pass
+    finally:
+        if ws in teachers_online:
+            del teachers_online[ws]
+        if ws in rooms_online:
+            del rooms_online[ws]
+            await broadcast_room_status()
 
-    def play_and_wait(self, text):
-        global current_play_id
-        with play_id_lock:
-            current_play_id += 1
-            my_id = current_play_id
+async def main():
+    port = int(os.environ.get("PORT", 8080))
+    async with websockets.serve(handler, "0.0.0.0", port):
+        print(f"服务器启动，端口 {port}")
+        await asyncio.Future()
 
-        start_time = time.time()
-
-        try:
-            pygame.mixer.music.stop()
-        except Exception:
-            pass
-
-        tmp = None
-        try:
-            tmp = os.path.join(tempfile.gettempdir(), f"shout_{uuid.uuid4().hex}.mp3")
-
-            async def _tts():
-                communicate = edge_tts.Communicate(text, VOICE)
-                await communicate.save(tmp)
-
-            asyncio.run(_tts())
-
-            with play_id_lock:
-                if my_id != current_play_id:
-                    if tmp and os.path.exists(tmp):
-                        try: os.remove(tmp)
-                        except Exception: pass
-                    return
-
-            try:
-                pygame.mixer.music.stop()
-            except Exception:
-                pass
-
-            pygame.mixer.music.load(tmp)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                with play_id_lock:
-                    if my_id != current_play_id:
-                        pygame.mixer.music.stop()
-                        break
-                pygame.time.Clock().tick(10)
-
-            with play_id_lock:
-                if my_id != current_play_id:
-                    return
-
-            elapsed = time.time() - start_time
-            remain = MIN_DISPLAY_SECONDS - elapsed
-            if remain > 0:
-                time.sleep(remain)
-
-            with play_id_lock:
-                if my_id == current_play_id:
-                    self.root.after(0, self.hide)
-
-        except Exception as e:
-            print("语音播放失败:", e)
-            elapsed = time.time() - start_time
-            remain = MIN_DISPLAY_SECONDS - elapsed
-            if remain > 0:
-                time.sleep(remain)
-            with play_id_lock:
-                if my_id == current_play_id:
-                    self.root.after(0, self.hide)
-        finally:
-            if tmp and os.path.exists(tmp):
-                try: os.remove(tmp)
-                except Exception: pass
-
-    def hide(self):
-        self.root.attributes("-fullscreen", False)
-        self.root.withdraw()
-
-
-if __name__ == "__main__":
-    ScreenApp()
+asyncio.run(main())
