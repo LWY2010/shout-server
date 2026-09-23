@@ -4,6 +4,8 @@ import threading
 import tkinter as tk
 from tkinter import messagebox
 import websockets
+import os
+import sys
 
 SERVER = "wss://shout-server-production.up.railway.app"
 
@@ -11,17 +13,60 @@ GRADES = ["高一", "高二", "高三"]
 CLASS_NUMS = list(range(1, 17))
 
 
+def get_save_path():
+    if getattr(sys, "frozen", False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, "teacher_user.txt")
+
+
+def load_saved_user():
+    path = get_save_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                name = f.read().strip()
+                if name:
+                    return name
+        except Exception:
+            pass
+    return ""
+
+
+def save_user(name):
+    try:
+        with open(get_save_path(), "w", encoding="utf-8") as f:
+            f.write(name)
+    except Exception as e:
+        print("保存登录名字失败:", e)
+
+
+def clear_saved_user():
+    try:
+        path = get_save_path()
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception as e:
+        print("清除登录名字失败:", e)
+
+
 class TeacherApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("办公室喊话")
-        self.root.geometry("760x720")
+        self.root.geometry("820x740")
 
         self.ws = None
         self.loop = None
         self.username = None
         self.room_vars = {}
         self.grade_vars = {}
+        self.status_labels = {}
+        self.online_ids = set()
+
+        self.saved_user = load_saved_user()
+        self.auto_login_pending = bool(self.saved_user)
 
         threading.Thread(target=self.connect, daemon=True).start()
         self.build_login()
@@ -36,16 +81,28 @@ class TeacherApp:
         self.username = None
         self.room_vars.clear()
         self.grade_vars.clear()
+        self.status_labels.clear()
 
         tk.Label(self.root, text="办公室喊话",
                  font=("微软雅黑", 20, "bold")).pack(pady=25)
-        tk.Label(self.root, text="请输入您的名字：",
-                 font=("微软雅黑", 12)).pack()
+
+        if self.saved_user:
+            tk.Label(self.root,
+                     text=f"上次登录：{self.saved_user}（正在自动登录...）",
+                     font=("微软雅黑", 10), fg="gray").pack()
+        else:
+            tk.Label(self.root, text="请输入您的名字：",
+                     font=("微软雅黑", 12)).pack()
+
         self.e_user = tk.Entry(self.root, font=("微软雅黑", 13), width=20)
         self.e_user.pack(pady=8)
+        if self.saved_user:
+            self.e_user.insert(0, self.saved_user)
+
         tk.Button(self.root, text="进入", font=("微软雅黑", 13), width=12,
                   bg="#4CAF50", fg="white",
                   command=self.do_login).pack(pady=15)
+
         self.status = tk.Label(self.root, text="正在连接服务器...",
                                fg="orange", font=("微软雅黑", 10))
         self.status.pack(pady=10)
@@ -54,6 +111,7 @@ class TeacherApp:
         self.clear()
         self.room_vars.clear()
         self.grade_vars.clear()
+        self.status_labels.clear()
 
         top = tk.Frame(self.root)
         top.pack(fill="x", padx=15, pady=6)
@@ -63,6 +121,13 @@ class TeacherApp:
                   font=("微软雅黑", 10),
                   bg="#FF9800", fg="white",
                   command=self.do_logout).pack(side="right")
+
+        legend = tk.Frame(self.root)
+        legend.pack(fill="x", padx=15)
+        tk.Label(legend, text="● 在线", fg="green",
+                 font=("微软雅黑", 10)).pack(side="left", padx=6)
+        tk.Label(legend, text="● 离线", fg="gray",
+                 font=("微软雅黑", 10)).pack(side="left", padx=6)
 
         container = tk.Frame(self.root)
         container.pack(fill="both", expand=True, padx=15, pady=4)
@@ -85,12 +150,17 @@ class TeacherApp:
             grid = tk.Frame(frame)
             grid.pack(fill="x", padx=6, pady=(0, 6))
             for i, n in enumerate(CLASS_NUMS):
-                key = (g, n)
+                rid = f"{g}{n}班"
                 var = tk.BooleanVar(value=False)
-                self.room_vars[key] = var
-                tk.Checkbutton(grid, text=f"{n}班", variable=var,
-                               font=("微软雅黑", 10), width=5).grid(
-                    row=i // 8, column=i % 8, padx=2, pady=1, sticky="w")
+                self.room_vars[rid] = var
+                cell = tk.Frame(grid)
+                cell.grid(row=i // 8, column=i % 8, padx=2, pady=1, sticky="w")
+                tk.Checkbutton(cell, text=f"{n}班", variable=var,
+                               font=("微软雅黑", 10)).pack(side="left")
+                lab = tk.Label(cell, text="●", fg="gray",
+                               font=("微软雅黑", 10))
+                lab.pack(side="left")
+                self.status_labels[rid] = lab
 
         tk.Label(self.root, text="喊话内容：",
                  font=("微软雅黑", 12)).pack(anchor="w", padx=15, pady=(8, 0))
@@ -104,6 +174,8 @@ class TeacherApp:
                   command=self.send).pack(side="left", padx=6)
         tk.Button(btn_row, text="全不选", font=("微软雅黑", 11),
                   command=self.clear_all).pack(side="left", padx=6)
+        tk.Button(btn_row, text="只选在线", font=("微软雅黑", 11),
+                  command=self.select_online).pack(side="left", padx=6)
 
         self.status = tk.Label(self.root, text="就绪", fg="green",
                                font=("微软雅黑", 10))
@@ -111,8 +183,8 @@ class TeacherApp:
 
     def toggle_grade(self, grade):
         val = self.grade_vars[grade].get()
-        for (g, n), var in self.room_vars.items():
-            if g == grade:
+        for rid, var in self.room_vars.items():
+            if rid.startswith(grade):
                 var.set(val)
 
     def clear_all(self):
@@ -120,6 +192,10 @@ class TeacherApp:
             v.set(False)
         for v in self.grade_vars.values():
             v.set(False)
+
+    def select_online(self):
+        for rid, var in self.room_vars.items():
+            var.set(rid in self.online_ids)
 
     def connect(self):
         self.loop = asyncio.new_event_loop()
@@ -133,6 +209,9 @@ class TeacherApp:
                     self.ws = ws
                     self.root.after(0, lambda: self.status.config(
                         text="已连接", fg="green"))
+                    if self.auto_login_pending and self.saved_user:
+                        self.auto_login_pending = False
+                        self.root.after(500, self._auto_login)
                     async for raw in ws:
                         msg = json.loads(raw)
                         self.root.after(0, lambda m=msg: self.handle(m))
@@ -141,6 +220,13 @@ class TeacherApp:
                 self.root.after(0, lambda: self.status.config(
                     text="连接断开，重试中...", fg="red"))
                 await asyncio.sleep(3)
+
+    def _auto_login(self):
+        if not self.ws:
+            self.auto_login_pending = True
+            return
+        self.send_json({"action": "teacher_login",
+                        "username": self.saved_user})
 
     def send_json(self, obj):
         if self.ws:
@@ -153,22 +239,37 @@ class TeacherApp:
         if t == "login_ok":
             self.username = msg["username"]
             self.build_main()
+            self.apply_status(self.online_ids)
+        elif t == "room_status":
+            self.online_ids = set(msg.get("online", []))
+            self.apply_status(self.online_ids)
         elif t == "sent":
             self.status.config(text=f"已发送给 {msg.get('count',0)} 个在线班级",
                                fg="blue")
         elif t == "error":
             messagebox.showerror("错误", msg.get("msg", "未知错误"))
 
+    def apply_status(self, online_ids):
+        for rid, lab in self.status_labels.items():
+            if not lab.winfo_exists():
+                continue
+            lab.config(fg="green" if rid in online_ids else "gray")
+
     def do_login(self):
         name = self.e_user.get().strip()
         if not name:
             messagebox.showwarning("提示", "请输入名字")
             return
+        save_user(name)
+        self.saved_user = name
         self.send_json({"action": "teacher_login", "username": name})
 
     def do_logout(self):
-        if not messagebox.askyesno("确认", "退出登录后需要重新输入名字，确定吗？"):
+        if not messagebox.askyesno("确认",
+                                   "退出登录后需要重新输入名字，确定吗？"):
             return
+        clear_saved_user()
+        self.saved_user = ""
         self.username = None
         self.build_login()
 
@@ -177,10 +278,7 @@ class TeacherApp:
         if not text:
             messagebox.showwarning("提示", "请输入喊话内容")
             return
-        targets = []
-        for (g, n), var in self.room_vars.items():
-            if var.get():
-                targets.append(f"{g}{n}班")
+        targets = [rid for rid, var in self.room_vars.items() if var.get()]
         if not targets:
             messagebox.showwarning("提示", "请先勾选至少一个班级")
             return
