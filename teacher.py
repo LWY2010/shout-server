@@ -1,5 +1,6 @@
 import asyncio
 import json
+import socket
 import threading
 import tkinter as tk
 from tkinter import messagebox
@@ -11,6 +12,33 @@ SERVER = "wss://shout-server-production.up.railway.app"
 
 GRADES = ["高一", "高二", "高三"]
 CLASS_NUMS = list(range(1, 17))
+
+SINGLE_INSTANCE_PORT = 18889
+
+
+def try_acquire_single_instance():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", SINGLE_INSTANCE_PORT))
+        s.listen(1)
+        return s, True
+    except OSError:
+        try:
+            s.close()
+        except Exception:
+            pass
+        return None, False
+
+
+def notify_existing_instance():
+    try:
+        c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        c.settimeout(2)
+        c.connect(("127.0.0.1", SINGLE_INSTANCE_PORT))
+        c.send(b"SHOW")
+        c.close()
+    except Exception as e:
+        print("通知已有实例失败:", e)
 
 
 def get_save_path():
@@ -53,9 +81,14 @@ def clear_saved_user():
 
 class TeacherApp:
     def __init__(self):
+        self.single_sock, is_first = try_acquire_single_instance()
+        if not is_first:
+            notify_existing_instance()
+            sys.exit(0)
+
         self.root = tk.Tk()
         self.root.title("办公室喊话")
-        self.root.geometry("820x740")
+        self.root.geometry("820x780")
 
         self.ws = None
         self.loop = None
@@ -68,9 +101,40 @@ class TeacherApp:
         self.saved_user = load_saved_user()
         self.auto_login_pending = bool(self.saved_user)
 
+        # 是否显示发送者名字（默认勾选）
+        self.show_sender_var = tk.BooleanVar(value=True)
+
         threading.Thread(target=self.connect, daemon=True).start()
+        threading.Thread(target=self.listen_single_signal, daemon=True).start()
         self.build_login()
         self.root.mainloop()
+
+    def listen_single_signal(self):
+        while True:
+            try:
+                conn, _ = self.single_sock.accept()
+                try:
+                    data = conn.recv(16)
+                except Exception:
+                    data = b""
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                if data == b"SHOW":
+                    self.root.after(0, self.bring_to_front)
+            except Exception:
+                break
+
+    def bring_to_front(self):
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+            self.root.after(800, lambda: self.root.attributes("-topmost", False))
+            self.root.focus_force()
+        except Exception as e:
+            print("激活窗口失败:", e)
 
     def clear(self):
         for w in self.root.winfo_children():
@@ -121,6 +185,15 @@ class TeacherApp:
                   font=("微软雅黑", 10),
                   bg="#FF9800", fg="white",
                   command=self.do_logout).pack(side="right")
+
+        # 显示发送者开关
+        opt_row = tk.Frame(self.root)
+        opt_row.pack(fill="x", padx=15, pady=2)
+        tk.Checkbutton(
+            opt_row, text="在大屏上显示我的名字",
+            variable=self.show_sender_var,
+            font=("微软雅黑", 11)
+        ).pack(side="left")
 
         legend = tk.Frame(self.root)
         legend.pack(fill="x", padx=15)
@@ -282,8 +355,12 @@ class TeacherApp:
         if not targets:
             messagebox.showwarning("提示", "请先勾选至少一个班级")
             return
-        self.send_json({"action": "shout",
-                        "room_ids": targets, "text": text})
+        self.send_json({
+            "action": "shout",
+            "room_ids": targets,
+            "text": text,
+            "show_sender": self.show_sender_var.get()
+        })
         self.msg.delete("1.0", "end")
 
 
