@@ -15,6 +15,9 @@ CLASS_NUMS = list(range(1, 17))
 
 SINGLE_INSTANCE_PORT = 18889
 
+# 数据固定存放目录
+DATA_DIR = r"C:\ClassroomShout"
+
 
 def try_acquire_single_instance():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -41,12 +44,16 @@ def notify_existing_instance():
         print("通知已有实例失败:", e)
 
 
+def ensure_data_dir():
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except Exception as e:
+        print("创建数据目录失败:", e)
+
+
 def get_save_path():
-    if getattr(sys, "frozen", False):
-        base_dir = os.path.dirname(sys.executable)
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_dir, "teacher_user.txt")
+    ensure_data_dir()
+    return os.path.join(DATA_DIR, "teacher_user.txt")
 
 
 def load_saved_user():
@@ -101,7 +108,6 @@ class TeacherApp:
         self.saved_user = load_saved_user()
         self.auto_login_pending = bool(self.saved_user)
 
-        # 是否显示发送者名字（默认勾选）
         self.show_sender_var = tk.BooleanVar(value=True)
 
         threading.Thread(target=self.connect, daemon=True).start()
@@ -186,7 +192,6 @@ class TeacherApp:
                   bg="#FF9800", fg="white",
                   command=self.do_logout).pack(side="right")
 
-        # 显示发送者开关
         opt_row = tk.Frame(self.root)
         opt_row.pack(fill="x", padx=15, pady=2)
         tk.Checkbutton(
