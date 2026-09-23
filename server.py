@@ -61,12 +61,19 @@ async def handler(ws):
                     continue
                 room_ids = msg.get("room_ids", [])
                 text = msg.get("text", "").strip()
+                show_sender = bool(msg.get("show_sender", False))
                 if not text or not room_ids:
                     continue
+                sender = teachers_online[ws]["username"]
+                payload = {
+                    "type": "shout",
+                    "text": text,
+                    "sender": sender if show_sender else "",
+                }
                 sent = 0
                 for rws, info in list(rooms_online.items()):
                     if info["room_id"] in room_ids:
-                        await send_json(rws, {"type": "shout", "text": text})
+                        await send_json(rws, payload)
                         sent += 1
                 await send_json(ws, {"type": "sent", "count": sent})
 
