@@ -44,7 +44,7 @@ def main():
             "完成",
             f"密码已更新为：{new_pwd}\n\n"
             f"保存位置：{auth_path}\n\n"
-            f"请重启该电脑上的 screen.exe 使新密码生效。"
+            f"新密码立即生效（无需重启 screen.exe）。"
         )
     except Exception as e:
         messagebox.showerror("错误", f"写入失败：{e}")
