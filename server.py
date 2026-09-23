@@ -24,6 +24,14 @@ async def send_json(ws, obj):
     except Exception:
         pass
 
+def online_room_ids():
+    return list(set(info["room_id"] for info in rooms_online.values()))
+
+async def broadcast_room_status():
+    ids = online_room_ids()
+    for tws in list(teachers_online.keys()):
+        await send_json(tws, {"type": "room_status", "online": ids})
+
 async def handler(ws):
     role = None
     try:
@@ -42,6 +50,10 @@ async def handler(ws):
                     "type": "login_ok",
                     "username": username,
                     "rooms": list(ROOMS.values())
+                })
+                await send_json(ws, {
+                    "type": "room_status",
+                    "online": online_room_ids()
                 })
 
             elif action == "shout":
@@ -70,6 +82,7 @@ async def handler(ws):
                     "room_id": room_id,
                     "name": room_id
                 })
+                await broadcast_room_status()
 
     except websockets.ConnectionClosed:
         pass
@@ -78,6 +91,7 @@ async def handler(ws):
             del teachers_online[ws]
         if ws in rooms_online:
             del rooms_online[ws]
+            await broadcast_room_status()
 
 async def main():
     port = int(os.environ.get("PORT", 8080))
