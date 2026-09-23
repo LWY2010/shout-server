@@ -18,13 +18,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller websockets edge-tts pygame
+          pip install pyinstaller websockets edge-tts pygame pystray pillow
 
       - name: Build teacher.exe
         run: pyinstaller -F -w teacher.py
 
       - name: Build screen.exe
-        run: pyinstaller -F -w --collect-all edge_tts --collect-all pygame screen.py
+        run: pyinstaller -F -w --collect-all edge_tts --collect-all pygame --collect-all pystray screen.py
 
       - name: Build reset_pwd.exe
         run: pyinstaller -F -w reset_pwd.py
