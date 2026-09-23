@@ -1,6 +1,7 @@
 import asyncio
 import json
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 import websockets
@@ -11,6 +12,8 @@ import tempfile
 import pygame
 import uuid
 import winreg
+import pystray
+from PIL import Image, ImageDraw
 
 SERVER = "wss://shout-server-production.up.railway.app"
 VOICE = "zh-CN-XiaoxiaoNeural"
@@ -25,8 +28,9 @@ play_id_lock = threading.Lock()
 
 APP_NAME = "ClassroomScreen"
 
+MIN_DISPLAY_SECONDS = 20
 
-# ---------- 路径 / 配置 ----------
+
 def get_base_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
@@ -52,9 +56,6 @@ def load_password():
         except Exception:
             pass
     return "01180204"
-
-
-RESET_PASSWORD = load_password()
 
 
 def load_room():
@@ -125,6 +126,34 @@ def set_autostart(enable=True):
         print("设置开机自启失败:", e)
 
 
+def make_tray_image():
+    img = Image.new("RGB", (64, 64), color="black")
+    d = ImageDraw.Draw(img)
+    d.rectangle([12, 12, 52, 52], fill="#FFD700")
+    d.rectangle([20, 20, 44, 44], fill="black")
+    return img
+
+
+def run_tray(app):
+    def on_quit(icon, item):
+        try:
+            icon.stop()
+        except Exception:
+            pass
+        try:
+            app.root.quit()
+            app.root.destroy()
+        except Exception:
+            pass
+
+    menu = pystray.Menu(
+        pystray.MenuItem("退出程序", on_quit),
+    )
+    icon = pystray.Icon("ClassroomScreen", make_tray_image(), "教室大屏", menu)
+    app.tray_icon = icon
+    icon.run()
+
+
 class ScreenApp:
     def __init__(self):
         self.root = tk.Tk()
@@ -135,6 +164,10 @@ class ScreenApp:
         self.label = None
         self.ws = None
         self.state_label = None
+        self.tray_icon = None
+        self.startup_done = True
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close_attempt)
 
         if "--reset" in sys.argv:
             clear_room()
@@ -148,8 +181,17 @@ class ScreenApp:
             self.show_startup_window()
 
         self.root.bind("<Escape>", lambda e: self.hide())
+
+        threading.Thread(target=run_tray, args=(self,), daemon=True).start()
         threading.Thread(target=self.listen, daemon=True).start()
+
         self.root.mainloop()
+
+    def on_close_attempt(self):
+        if not self.startup_done:
+            self.close_startup()
+        else:
+            self.hide()
 
     def show_select_window(self):
         for w in self.root.winfo_children():
@@ -230,30 +272,19 @@ class ScreenApp:
                   bg="#FF9800", fg="white",
                   command=self.reset_room).pack(side="left", padx=5)
 
-    def reset_room(self):
-        global RESET_PASSWORD
-        pwd = simpledialog.askstring(
-            "请输入管理密码",
-            "清除配置需要密码，请联系管理员：",
-            show="*",
-            parent=self.root
-        )
-        if pwd is None:
-            return
-        # 每次点击实时读一次密码，避免改密码后必须重启
-        RESET_PASSWORD = load_password()
-        if pwd != RESET_PASSWORD:
-            messagebox.showerror("错误", "密码错误")
-            return
+        self.startup_done = False
+        self.root.after(10000, self._auto_close_startup)
 
-        if not messagebox.askyesno("确认", "确定要清除当前班级配置，重新选择吗？"):
-            return
-        clear_room()
-        self.room_id = None
-        self.show_select_window()
+    def _auto_close_startup(self):
+        if not self.startup_done:
+            self.close_startup()
 
     def close_startup(self):
-        set_autostart(self.autostart_var.get())
+        self.startup_done = True
+        try:
+            set_autostart(self.autostart_var.get())
+        except Exception:
+            pass
         for w in self.root.winfo_children():
             w.destroy()
         self.label = tk.Label(self.root, text="",
@@ -262,6 +293,24 @@ class ScreenApp:
                               wraplength=1700, justify="center")
         self.label.pack(expand=True)
         self.root.withdraw()
+
+    def reset_room(self):
+        pwd = simpledialog.askstring(
+            "请输入管理密码",
+            "清除配置需要密码，请联系管理员：",
+            show="*",
+            parent=self.root
+        )
+        if pwd is None:
+            return
+        if pwd != load_password():
+            messagebox.showerror("错误", "密码错误")
+            return
+        if not messagebox.askyesno("确认", "确定要清除当前班级配置，重新选择吗？"):
+            return
+        clear_room()
+        self.room_id = None
+        self.show_select_window()
 
     def set_state_online(self):
         if self.state_label and self.state_label.winfo_exists():
@@ -294,21 +343,48 @@ class ScreenApp:
             except Exception:
                 await asyncio.sleep(3)
 
+    def calc_font_and_wrap(self, text):
+        n = len(text)
+        if n <= 3:
+            size = 160
+        elif n <= 6:
+            size = 130
+        elif n <= 10:
+            size = 110
+        elif n <= 20:
+            size = 85
+        elif n <= 35:
+            size = 65
+        elif n <= 60:
+            size = 50
+        elif n <= 100:
+            size = 38
+        else:
+            size = 30
+        wrap = self.root.winfo_screenwidth() - 200
+        return size, wrap
+
     def show(self, text):
         if not self.label:
             return
-        self.label.config(text=text)
+        size, wrap = self.calc_font_and_wrap(text)
+        self.label.config(text=text,
+                          font=("微软雅黑", size, "bold"),
+                          wraplength=wrap,
+                          justify="center")
         self.root.deiconify()
         self.root.attributes("-fullscreen", True)
         self.root.lift()
         self.root.focus_force()
-        threading.Thread(target=self.speak, args=(text,), daemon=True).start()
+        threading.Thread(target=self.play_and_wait, args=(text,), daemon=True).start()
 
-    def speak(self, text):
+    def play_and_wait(self, text):
         global current_play_id
         with play_id_lock:
             current_play_id += 1
             my_id = current_play_id
+
+        start_time = time.time()
 
         try:
             pygame.mixer.music.stop()
@@ -347,11 +423,27 @@ class ScreenApp:
                 pygame.time.Clock().tick(10)
 
             with play_id_lock:
+                if my_id != current_play_id:
+                    return
+
+            elapsed = time.time() - start_time
+            remain = MIN_DISPLAY_SECONDS - elapsed
+            if remain > 0:
+                time.sleep(remain)
+
+            with play_id_lock:
                 if my_id == current_play_id:
                     self.root.after(0, self.hide)
+
         except Exception as e:
             print("语音播放失败:", e)
-            self.root.after(0, self.hide)
+            elapsed = time.time() - start_time
+            remain = MIN_DISPLAY_SECONDS - elapsed
+            if remain > 0:
+                time.sleep(remain)
+            with play_id_lock:
+                if my_id == current_play_id:
+                    self.root.after(0, self.hide)
         finally:
             if tmp and os.path.exists(tmp):
                 try: os.remove(tmp)
