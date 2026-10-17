@@ -3,7 +3,7 @@ import json
 import socket
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 import websockets
 import os
 import sys
@@ -14,6 +14,12 @@ import tempfile
 import time
 import ssl
 import urllib3
+
+# 尝试导入 openpyxl (用于读取 Excel)
+try:
+    import openpyxl
+except ImportError:
+    openpyxl = None
 
 # 禁用证书验证警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -85,7 +91,6 @@ def check_update(exe_name="teacher.exe"):
         current_exe_path = sys.executable
         bat_path = os.path.join(tempfile.gettempdir(), "update_teacher.bat")
         
-        # 修复环境冲突和乱码的 BAT 脚本
         bat_content = f"""
 @echo off
 echo [%date% %time%] BAT脚本启动 >> "{bat_log}"
@@ -144,6 +149,10 @@ def get_save_path():
     ensure_data_dir()
     return os.path.join(DATA_DIR, "teacher_user.txt")
 
+def get_roster_path():
+    ensure_data_dir()
+    return os.path.join(DATA_DIR, "roster.txt")
+
 def load_saved_user():
     path = get_save_path()
     if os.path.exists(path):
@@ -186,6 +195,9 @@ class TeacherApp:
         self.grade_vars = {}
         self.status_labels = {}
         self.online_ids = set()
+        
+        self.students = []
+        self.load_local_roster()
 
         self.saved_user = load_saved_user()
         self.auto_login_pending = bool(self.saved_user)
@@ -195,6 +207,15 @@ class TeacherApp:
         threading.Thread(target=self.listen_single_signal, daemon=True).start()
         self.build_login()
         self.root.mainloop()
+
+    def load_local_roster(self):
+        path = get_roster_path()
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self.students = [line.strip() for line in f if line.strip()]
+            except Exception:
+                pass
 
     def listen_single_signal(self):
         while True:
@@ -289,7 +310,11 @@ class TeacherApp:
                 lab.pack(side="left")
                 self.status_labels[rid] = lab
 
-        tk.Label(self.root, text="喊话内容：", font=("微软雅黑", 12)).pack(anchor="w", padx=15, pady=(8, 0))
+        msg_head = tk.Frame(self.root)
+        msg_head.pack(fill="x", padx=15, pady=(8, 0))
+        tk.Label(msg_head, text="喊话内容：", font=("微软雅黑", 12)).pack(side="left")
+        tk.Button(msg_head, text="📋 导入/选择学生", font=("微软雅黑", 10), bg="#2196F3", fg="white", command=self.open_roster_window).pack(side="right")
+
         self.msg = tk.Text(self.root, height=5, font=("微软雅黑", 12))
         self.msg.pack(fill="x", padx=15)
 
@@ -301,6 +326,108 @@ class TeacherApp:
 
         self.status = tk.Label(self.root, text="就绪", fg="green", font=("微软雅黑", 10))
         self.status.pack(pady=4)
+
+    def open_roster_window(self):
+        win = tk.Toplevel(self.root)
+        win.title("学生花名册")
+        win.geometry("400x500")
+        win.attributes("-topmost", True)
+
+        toolbar = tk.Frame(win)
+        toolbar.pack(fill="x", padx=10, pady=10)
+
+        tk.Button(toolbar, text="导入名单 (.xlsx/.txt/.csv)", command=lambda: self.import_roster(win)).pack(side="left")
+
+        search_frame = tk.Frame(win)
+        search_frame.pack(fill="x", padx=10, pady=5)
+        tk.Label(search_frame, text="搜索：").pack(side="left")
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(search_frame, textvariable=search_var, font=("微软雅黑", 11))
+        search_entry.pack(side="left", fill="x", expand=True)
+        search_entry.focus_set()
+
+        list_frame = tk.Frame(win)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        listbox = tk.Listbox(list_frame, font=("微软雅黑", 12), yscrollcommand=scrollbar.set)
+        listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=listbox.yview)
+
+        def refresh_list(*args):
+            keyword = search_var.get().strip()
+            listbox.delete(0, tk.END)
+            for name in self.students:
+                if keyword in name:
+                    listbox.insert(tk.END, name)
+
+        def on_select(event):
+            selection = listbox.curselection()
+            if selection:
+                name = listbox.get(selection[0])
+                self.msg.insert(tk.END, f"{name} ")
+                self.msg.see(tk.END)  
+                win.destroy() 
+
+        search_var.trace_add("write", refresh_list)
+        listbox.bind("<Double-Button-1>", on_select) 
+        listbox.bind("<Return>", on_select) 
+
+        refresh_list()
+
+    def import_roster(self, parent_win):
+        file_path = filedialog.askopenfilename(
+            parent=parent_win,
+            title="选择学生名单文件",
+            filetypes=[("Excel 文件", "*.xlsx"), ("文本文件", "*.txt"), ("CSV文件", "*.csv"), ("所有文件", "*.*")]
+        )
+        if not file_path:
+            return
+
+        new_names = []
+        file_ext = os.path.splitext(file_path)[1].lower()
+
+        try:
+            if file_ext == ".xlsx":
+                if openpyxl is None:
+                    messagebox.showerror("错误", "缺少 openpyxl 库，无法读取 Excel。请使用 .txt 或 .csv", parent=parent_win)
+                    return
+                
+                # 读取 Excel
+                wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+                sheet = wb.active # 默认读取第一个表
+                for row in sheet.iter_rows(values_only=True):
+                    if row and row[0]: # 读取第一列，且不为空
+                        name = str(row[0]).strip()
+                        if name and name != "姓名" and name != "名字":
+                            new_names.append(name)
+                wb.close()
+
+            else:
+                # 读取文本或 CSV
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    content = content.replace(",", "\n").replace("，", "\n")
+                    new_names = [line.strip() for line in content.splitlines() if line.strip()]
+
+            if not new_names:
+                messagebox.showwarning("提示", "没有读取到有效的名字", parent=parent_win)
+                return
+
+            self.students = new_names
+            
+            with open(get_roster_path(), "w", encoding="utf-8") as f:
+                for name in self.students:
+                    f.write(name + "\n")
+
+            messagebox.showinfo("成功", f"成功导入 {len(self.students)} 名学生！\n名单已自动保存。", parent=parent_win)
+            parent_win.destroy()
+            self.open_roster_window()
+
+        except Exception as e:
+            messagebox.showerror("错误", f"导入失败：{e}\n（如果文件正在被 Excel 打开，请先关闭 Excel）", parent=parent_win)
 
     def toggle_grade(self, grade):
         val = self.grade_vars[grade].get()
