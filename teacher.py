@@ -15,9 +15,8 @@ import time
 import ssl
 import urllib3
 
-# 禁用由于不验证证书产生的警告
+# 禁用证书验证警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-# 全局关闭 urllib 的 SSL 验证
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ================= 配置区 =================
@@ -33,7 +32,7 @@ SINGLE_INSTANCE_PORT = 18889
 DATA_DIR = r"C:\ClassroomShout"
 
 def check_update(exe_name="teacher.exe"):
-    """后台检查并下载更新（带日志、加速和跳过 SSL 验证版）"""
+    """后台检查并下载更新（强力替换版）"""
     log_path = os.path.join(DATA_DIR, "update_log.txt")
     
     def write_log(msg):
@@ -50,7 +49,6 @@ def check_update(exe_name="teacher.exe"):
         write_log(f"开始检查更新，当前版本: {CURRENT_VERSION}")
         
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-        # 【关键修改】加上 verify=False 关闭验证
         resp = requests.get(api_url, timeout=10, verify=False)
         write_log(f"API 请求状态码: {resp.status_code}")
         
@@ -86,21 +84,25 @@ def check_update(exe_name="teacher.exe"):
         current_exe_path = sys.executable
         bat_path = os.path.join(tempfile.gettempdir(), "update_teacher.bat")
         
+        # 强力替换脚本（增加强制结束、延迟、强制删除）
         bat_content = f"""
 @echo off
+chcp 65001 >nul
 ping 127.0.0.1 -n 3 > nul
-taskkill /F /IM {exe_name} > nul 2>&1
-del "{current_exe_path}" > nul 2>&1
-move "{temp_exe}" "{current_exe_path}" > nul 2>&1
+taskkill /f /im {exe_name} > nul 2>&1
+ping 127.0.0.1 -n 3 > nul
+del /f /q /a "{current_exe_path}" > nul 2>&1
+move /y "{temp_exe}" "{current_exe_path}" > nul 2>&1
 start "" "{current_exe_path}"
 del "%~f0"
 """
         with open(bat_path, "w", encoding="gbk") as f:
             f.write(bat_content)
 
-        write_log("执行替换脚本，程序即将重启")
+        write_log("执行替换脚本，程序即将瞬间退出")
         subprocess.Popen(bat_path, shell=True)
-        sys.exit(0)
+        # 核心修复：直接杀死整个进程
+        os._exit(0)
 
     except Exception as e:
         write_log(f"发生异常: {str(e)}")
@@ -162,6 +164,7 @@ class TeacherApp:
             notify_existing_instance()
             sys.exit(0)
             
+        # 启动后台检查更新
         threading.Thread(target=check_update, args=("teacher.exe",), daemon=True).start()
 
         self.root = tk.Tk()
