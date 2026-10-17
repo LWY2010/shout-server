@@ -12,6 +12,13 @@ import urllib.request
 import subprocess
 import tempfile
 import time
+import ssl
+import urllib3
+
+# 禁用由于不验证证书产生的警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# 全局关闭 urllib 的 SSL 验证
+ssl._create_default_https_context = ssl._create_unverified_context
 
 # ================= 配置区 =================
 SERVER = "wss://xvxdrz3k3j.sealosbja.site/__websocket__"
@@ -26,7 +33,7 @@ SINGLE_INSTANCE_PORT = 18889
 DATA_DIR = r"C:\ClassroomShout"
 
 def check_update(exe_name="teacher.exe"):
-    """后台检查并下载更新（带日志和加速版）"""
+    """后台检查并下载更新（带日志、加速和跳过 SSL 验证版）"""
     log_path = os.path.join(DATA_DIR, "update_log.txt")
     
     def write_log(msg):
@@ -38,12 +45,13 @@ def check_update(exe_name="teacher.exe"):
             pass
 
     try:
-        time.sleep(5) # 留点时间给主程序启动
+        time.sleep(5)
         write_log("="*30)
         write_log(f"开始检查更新，当前版本: {CURRENT_VERSION}")
         
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-        resp = requests.get(api_url, timeout=10)
+        # 【关键修改】加上 verify=False 关闭验证
+        resp = requests.get(api_url, timeout=10, verify=False)
         write_log(f"API 请求状态码: {resp.status_code}")
         
         if resp.status_code != 200:
@@ -68,7 +76,6 @@ def check_update(exe_name="teacher.exe"):
             write_log(f"未在 Release 中找到 {exe_name}，退出")
             return
 
-        # 使用加速镜像下载
         fast_url = download_url.replace("github.com", "ghfast.top/https://github.com")
         write_log(f"开始下载新版: {fast_url}")
         
@@ -155,7 +162,6 @@ class TeacherApp:
             notify_existing_instance()
             sys.exit(0)
             
-        # 启动后台检查更新
         threading.Thread(target=check_update, args=("teacher.exe",), daemon=True).start()
 
         self.root = tk.Tk()
