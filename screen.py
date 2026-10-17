@@ -18,6 +18,12 @@ from PIL import Image, ImageDraw
 import requests
 import urllib.request
 import subprocess
+import ssl
+import urllib3
+
+# 禁用证书验证警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+ssl._create_default_https_context = ssl._create_unverified_context
 
 # ================= 配置区 =================
 SERVER = "wss://xvxdrz3k3j.sealosbja.site/__websocket__"
@@ -42,7 +48,7 @@ SINGLE_INSTANCE_PORT = 18888
 DATA_DIR = r"C:\ClassroomShout"
 
 def check_update(exe_name="screen.exe"):
-    """后台检查并下载更新（带日志和加速版）"""
+    """后台检查并下载更新（强力替换版）"""
     log_path = os.path.join(DATA_DIR, "update_log.txt")
     
     def write_log(msg):
@@ -59,7 +65,7 @@ def check_update(exe_name="screen.exe"):
         write_log(f"开始检查更新，当前版本: {CURRENT_VERSION}")
         
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-        resp = requests.get(api_url, timeout=10)
+        resp = requests.get(api_url, timeout=10, verify=False)
         write_log(f"API 请求状态码: {resp.status_code}")
         
         if resp.status_code != 200:
@@ -84,7 +90,6 @@ def check_update(exe_name="screen.exe"):
             write_log(f"未在 Release 中找到 {exe_name}，退出")
             return
 
-        # 使用加速镜像下载
         fast_url = download_url.replace("github.com", "ghfast.top/https://github.com")
         write_log(f"开始下载新版: {fast_url}")
         
@@ -95,21 +100,25 @@ def check_update(exe_name="screen.exe"):
         current_exe_path = sys.executable
         bat_path = os.path.join(tempfile.gettempdir(), "update_screen.bat")
         
+        # 强力替换脚本（增加强制结束、延迟、强制删除）
         bat_content = f"""
 @echo off
+chcp 65001 >nul
 ping 127.0.0.1 -n 3 > nul
-taskkill /F /IM {exe_name} > nul 2>&1
-del "{current_exe_path}" > nul 2>&1
-move "{temp_exe}" "{current_exe_path}" > nul 2>&1
+taskkill /f /im {exe_name} > nul 2>&1
+ping 127.0.0.1 -n 3 > nul
+del /f /q /a "{current_exe_path}" > nul 2>&1
+move /y "{temp_exe}" "{current_exe_path}" > nul 2>&1
 start "" "{current_exe_path}"
 del "%~f0"
 """
         with open(bat_path, "w", encoding="gbk") as f:
             f.write(bat_content)
 
-        write_log("执行替换脚本，程序即将重启")
+        write_log("执行替换脚本，程序即将瞬间退出")
         subprocess.Popen(bat_path, shell=True)
-        sys.exit(0)
+        # 核心修复：直接杀死整个进程
+        os._exit(0)
 
     except Exception as e:
         write_log(f"发生异常: {str(e)}")
@@ -234,7 +243,6 @@ class ScreenApp:
             notify_existing_instance()
             sys.exit(0)
             
-        # 启动后台检查更新
         threading.Thread(target=check_update, args=("screen.exe",), daemon=True).start()
 
         self.root = tk.Tk()
