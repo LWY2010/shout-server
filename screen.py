@@ -22,7 +22,7 @@ import subprocess
 # ================= 配置区 =================
 SERVER = "wss://xvxdrz3k3j.sealosbja.site/__websocket__"
 GITHUB_REPO = "LWY2010/shout-server"
-CURRENT_VERSION = "1.0.0"  # 每次发版请修改！
+CURRENT_VERSION = "1.0.1"  # 每次发版请修改！
 # =========================================
 
 VOICE = "zh-CN-XiaoxiaoNeural"
