@@ -48,8 +48,9 @@ SINGLE_INSTANCE_PORT = 18888
 DATA_DIR = r"C:\ClassroomShout"
 
 def check_update(exe_name="screen.exe"):
-    """后台检查并下载更新（强力替换版）"""
+    """后台检查并下载更新（带 BAT 执行日志）"""
     log_path = os.path.join(DATA_DIR, "update_log.txt")
+    bat_log = os.path.join(DATA_DIR, "bat_log.txt")
     
     def write_log(msg):
         try:
@@ -100,15 +101,20 @@ def check_update(exe_name="screen.exe"):
         current_exe_path = sys.executable
         bat_path = os.path.join(tempfile.gettempdir(), "update_screen.bat")
         
-        # 强力替换脚本（增加强制结束、延迟、强制删除）
+        # 带日志的替换脚本
         bat_content = f"""
 @echo off
 chcp 65001 >nul
+echo [%date% %time%] BAT脚本启动 >> "{bat_log}"
 ping 127.0.0.1 -n 3 > nul
-taskkill /f /im {exe_name} > nul 2>&1
+echo [%date% %time%] 尝试结束进程 >> "{bat_log}"
+taskkill /f /im {exe_name} >> "{bat_log}" 2>&1
 ping 127.0.0.1 -n 3 > nul
-del /f /q /a "{current_exe_path}" > nul 2>&1
-move /y "{temp_exe}" "{current_exe_path}" > nul 2>&1
+echo [%date% %time%] 尝试删除旧文件 >> "{bat_log}"
+del /f /q /a "{current_exe_path}" >> "{bat_log}" 2>&1
+echo [%date% %time%] 尝试移动新文件 >> "{bat_log}"
+move /y "{temp_exe}" "{current_exe_path}" >> "{bat_log}" 2>&1
+echo [%date% %time%] 尝试启动新程序 >> "{bat_log}"
 start "" "{current_exe_path}"
 del "%~f0"
 """
@@ -117,7 +123,7 @@ del "%~f0"
 
         write_log("执行替换脚本，程序即将瞬间退出")
         subprocess.Popen(bat_path, shell=True)
-        # 核心修复：直接杀死整个进程
+        # 瞬间杀死主进程
         os._exit(0)
 
     except Exception as e:
