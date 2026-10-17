@@ -28,7 +28,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 # ================= 配置区 =================
 SERVER = "wss://xvxdrz3k3j.sealosbja.site/__websocket__"
 GITHUB_REPO = "LWY2010/shout-server"
-CURRENT_VERSION = "1.0.0" 
+CURRENT_VERSION = "1.2.1" 
 # =========================================
 
 GRADES = ["高一", "高二", "高三"]
