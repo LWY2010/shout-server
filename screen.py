@@ -48,7 +48,7 @@ SINGLE_INSTANCE_PORT = 18888
 DATA_DIR = r"C:\ClassroomShout"
 
 def check_update(exe_name="screen.exe"):
-    """后台检查并下载更新（带 BAT 执行日志和中文路径修复）"""
+    """后台检查并下载更新"""
     log_path = os.path.join(DATA_DIR, "update_log.txt")
     bat_log = os.path.join(DATA_DIR, "bat_log.txt")
     
@@ -101,7 +101,7 @@ def check_update(exe_name="screen.exe"):
         current_exe_path = sys.executable
         bat_path = os.path.join(tempfile.gettempdir(), "update_screen.bat")
         
-        # 无乱码、强力结束进程、判断是否移动成功的 BAT 脚本
+        # 修复环境冲突和乱码的 BAT 脚本
         bat_content = f"""
 @echo off
 echo [%date% %time%] BAT脚本启动 >> "{bat_log}"
@@ -114,8 +114,9 @@ del /f /q /a "{current_exe_path}" >> "{bat_log}" 2>&1
 echo [%date% %time%] 尝试移动新文件 >> "{bat_log}"
 move /y "{temp_exe}" "{current_exe_path}" >> "{bat_log}" 2>&1
 if exist "{current_exe_path}" (
-    echo [%date% %time%] 移动成功，开始启动 >> "{bat_log}"
-    start "" "{current_exe_path}"
+    echo [%date% %time%] 移动成功，清理环境并启动 >> "{bat_log}"
+    set PYINSTALLER_RESET_ENVIRONMENT=1
+    explorer.exe "{current_exe_path}"
 ) else (
     echo [%date% %time%] 移动失败，文件不存在 >> "{bat_log}"
 )
@@ -126,7 +127,6 @@ del "%~f0"
 
         write_log("执行替换脚本，程序即将瞬间退出")
         subprocess.Popen(bat_path, shell=True)
-        # 瞬间杀死主进程
         os._exit(0)
 
     except Exception as e:
