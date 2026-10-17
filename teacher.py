@@ -16,7 +16,7 @@ import time
 # ================= 配置区 =================
 SERVER = "wss://xvxdrz3k3j.sealosbja.site/__websocket__"
 GITHUB_REPO = "LWY2010/shout-server"
-CURRENT_VERSION = "1.0.1"  # 发版时修改这里
+CURRENT_VERSION = "1.0.0" 
 # =========================================
 
 GRADES = ["高一", "高二", "高三"]
@@ -26,18 +26,36 @@ SINGLE_INSTANCE_PORT = 18889
 DATA_DIR = r"C:\ClassroomShout"
 
 def check_update(exe_name="teacher.exe"):
-    """后台检查并下载更新"""
+    """后台检查并下载更新（带日志和加速版）"""
+    log_path = os.path.join(DATA_DIR, "update_log.txt")
+    
+    def write_log(msg):
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+        except Exception:
+            pass
+
     try:
-        time.sleep(5)
+        time.sleep(5) # 留点时间给主程序启动
+        write_log("="*30)
+        write_log(f"开始检查更新，当前版本: {CURRENT_VERSION}")
+        
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-        resp = requests.get(api_url, timeout=5)
+        resp = requests.get(api_url, timeout=10)
+        write_log(f"API 请求状态码: {resp.status_code}")
+        
         if resp.status_code != 200:
+            write_log("获取 API 失败，退出更新")
             return
 
         data = resp.json()
         latest_version = data.get("tag_name", "").lstrip("v")
+        write_log(f"GitHub 最新版本: {latest_version}")
         
         if not latest_version or latest_version == CURRENT_VERSION:
+            write_log("版本一致，无需更新")
             return
 
         download_url = None
@@ -47,10 +65,16 @@ def check_update(exe_name="teacher.exe"):
                 break
         
         if not download_url:
+            write_log(f"未在 Release 中找到 {exe_name}，退出")
             return
 
+        # 使用加速镜像下载
+        fast_url = download_url.replace("github.com", "ghfast.top/https://github.com")
+        write_log(f"开始下载新版: {fast_url}")
+        
         temp_exe = os.path.join(tempfile.gettempdir(), f"new_{exe_name}")
-        urllib.request.urlretrieve(download_url, temp_exe)
+        urllib.request.urlretrieve(fast_url, temp_exe)
+        write_log("下载完成，准备替换文件")
 
         current_exe_path = sys.executable
         bat_path = os.path.join(tempfile.gettempdir(), "update_teacher.bat")
@@ -67,11 +91,12 @@ del "%~f0"
         with open(bat_path, "w", encoding="gbk") as f:
             f.write(bat_content)
 
+        write_log("执行替换脚本，程序即将重启")
         subprocess.Popen(bat_path, shell=True)
         sys.exit(0)
 
     except Exception as e:
-        print("检查更新失败:", e)
+        write_log(f"发生异常: {str(e)}")
 
 def try_acquire_single_instance():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -130,6 +155,7 @@ class TeacherApp:
             notify_existing_instance()
             sys.exit(0)
             
+        # 启动后台检查更新
         threading.Thread(target=check_update, args=("teacher.exe",), daemon=True).start()
 
         self.root = tk.Tk()
@@ -146,8 +172,6 @@ class TeacherApp:
 
         self.saved_user = load_saved_user()
         self.auto_login_pending = bool(self.saved_user)
-        
-        # 【修改在这里】默认不勾选显示名字
         self.show_sender_var = tk.BooleanVar(value=False)
 
         threading.Thread(target=self.connect, daemon=True).start()
