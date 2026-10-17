@@ -16,7 +16,7 @@ import time
 # ================= 配置区 =================
 SERVER = "wss://xvxdrz3k3j.sealosbja.site/__websocket__"
 GITHUB_REPO = "LWY2010/shout-server"
-CURRENT_VERSION = "1.0.0"  # 发版时修改这里
+CURRENT_VERSION = "1.0.1"  # 发版时修改这里
 # =========================================
 
 GRADES = ["高一", "高二", "高三"]
