@@ -18,7 +18,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller websockets edge-tts pygame pystray pillow requests
+          pip install pyinstaller websockets edge-tts pygame pystray pillow requests openpyxl
 
       - name: Build teacher.exe
         run: pyinstaller -F -w teacher.py
