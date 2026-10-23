@@ -1,1 +1,7 @@
 websockets
+apinator-server
+requests
+openpyxl
+pystray
+pygame
+edge-tts
