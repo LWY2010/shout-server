@@ -25,8 +25,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ================= 配置区 =================
-# ！！！把这里换成你 Render 分配的域名（注意是 wss://）
-SERVER = "wss://你的Render域名.onrender.com"
+APP_KEY = "app_0f98d696964886b64f1b12114923b79201fcdf31"
+CLUSTER = "us"
+
 GITHUB_REPO = "LWY2010/shout-server"
 CURRENT_VERSION = "1.0.0" 
 # =========================================
@@ -36,21 +37,17 @@ GRADES = ["高一", "高二", "高三"]
 CLASS_NUMS = list(range(1, 17))
 
 pygame.mixer.init()
-
 current_play_id = 0
 play_id_lock = threading.Lock()
 
 APP_NAME = "ClassroomScreen"
-
 MIN_DISPLAY_SECONDS = 20
 STARTUP_WINDOW_SECONDS = 5     
 SINGLE_INSTANCE_PORT = 18888
 DATA_DIR = r"C:\ClassroomShout"
 
 def check_update(exe_name="screen.exe"):
-    """后台检查并下载更新（弹窗确认版）"""
     log_path = os.path.join(DATA_DIR, "update_log.txt")
-    bat_log = os.path.join(DATA_DIR, "bat_log.txt")
     
     def write_log(msg):
         try:
@@ -61,7 +58,7 @@ def check_update(exe_name="screen.exe"):
             pass
 
     try:
-        time.sleep(5) 
+        time.sleep(5)
         
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
         resp = requests.get(api_url, timeout=10, verify=False)
@@ -84,8 +81,7 @@ def check_update(exe_name="screen.exe"):
         if not download_url:
             return
 
-        # 弹窗询问用户
-        ans = messagebox.askyesno("发现新版本", f"检测到新版本 {latest_version}，是否立即下载更新？\n（教室大屏建议点击“是”）")
+        ans = messagebox.askyesno("发现新版本", f"检测到新版本 {latest_version}，是否立即下载更新？\n（下载期间不影响教室喊话）")
         if not ans:
             return
 
@@ -95,7 +91,6 @@ def check_update(exe_name="screen.exe"):
         urllib.request.urlretrieve(fast_url, temp_exe)
         write_log("下载完成，准备替换文件")
 
-        # 提示重启
         ans2 = messagebox.askyesno("下载完成", "新版本已下载完毕。\n点击“是”将立即重启并应用更新。")
         if not ans2:
             return
@@ -230,7 +225,6 @@ def run_tray(app):
             app.root.quit()
             app.root.destroy()
         except Exception: pass
-
     menu = pystray.Menu(pystray.MenuItem("退出程序", on_quit))
     icon = pystray.Icon("ClassroomScreen", make_tray_image(), "教室大屏", menu)
     app.tray_icon = icon
@@ -249,7 +243,7 @@ class ScreenApp:
         self.root.title(f"班级大屏 v{CURRENT_VERSION}")
         self.root.configure(bg="black")
 
-        self.room_id = None
+        self.room_id = load_room()
         self.sender_label = None
         self.label = None
         self.ws = None
@@ -262,8 +256,6 @@ class ScreenApp:
 
         if "--reset" in sys.argv:
             clear_room()
-
-        self.room_id = load_room()
 
         if self.room_id is None:
             self.show_select_window()
@@ -353,7 +345,7 @@ class ScreenApp:
         tk.Label(self.root, text="✅ 教室大屏已启动", font=("微软雅黑", 16, "bold"), fg="white", bg="black").pack(pady=(15, 4))
         tk.Label(self.root, text=f"班级：{self.room_id}", font=("微软雅黑", 13, "bold"), fg="#FFD700", bg="black").pack(pady=4)
 
-        self.state_label = tk.Label(self.root, text="正在连接服务器...", font=("微软雅黑", 11), fg="orange", bg="black")
+        self.state_label = tk.Label(self.root, text="正在连接云端...", font=("微软雅黑", 11), fg="orange", bg="black")
         self.state_label.pack(pady=8)
 
         self.autostart_var = tk.BooleanVar(value=is_autostart_enabled())
@@ -396,24 +388,11 @@ class ScreenApp:
 
     def set_state_online(self):
         if self.state_label and self.state_label.winfo_exists():
-            self.state_label.config(text="✅ 已连接服务器", fg="green")
-
-    def keep_alive(self):
-        """每10分钟发一次心跳，防止 Render 休眠"""
-        while True:
-            time.sleep(600)
-            if self.ws:
-                try:
-                    asyncio.run_coroutine_threadsafe(
-                        self.ws.send(json.dumps({"action": "ping"})), self.loop
-                    )
-                except Exception:
-                    pass
+            self.state_label.config(text="✅ 已连接云端", fg="green")
 
     def connect(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        threading.Thread(target=self.keep_alive, daemon=True).start()
         self.loop.run_until_complete(self._listen())
 
     async def _listen(self):
@@ -422,18 +401,31 @@ class ScreenApp:
                 if not self.room_id:
                     await asyncio.sleep(1)
                     continue
-                async with websockets.connect(SERVER) as ws:
+                
+                channel_name = f"room-{self.room_id}"
+                uri = f"wss://ws-{CLUSTER}.apinator.io/app/{APP_KEY}"
+                
+                async with websockets.connect(uri) as ws:
                     self.ws = ws
-                    await ws.send(json.dumps({"action": "room_hello", "room_id": self.room_id}, ensure_ascii=False))
+                    subscribe_msg = {
+                        "event": "pusher:subscribe",
+                        "data": {"channel": channel_name}
+                    }
+                    await ws.send(json.dumps(subscribe_msg))
+                    
+                    self.root.after(0, self.set_state_online)
+                    
                     async for raw in ws:
                         msg = json.loads(raw)
-                        if msg.get("type") == "room_ok":
-                            self.root.after(0, self.set_state_online)
-                        elif msg.get("type") == "shout":
-                            text = msg.get("text", "")
-                            sender = msg.get("sender", "")
+                        if msg.get("event") == "shout":
+                            payload = json.loads(msg.get("data", "{}"))
+                            text = payload.get("text", "")
+                            sender = payload.get("sender", "")
                             self.root.after(0, lambda t=text, s=sender: self.show(t, s))
-            except Exception: await asyncio.sleep(3)
+            except Exception:
+                if self.state_label and self.state_label.winfo_exists():
+                    self.root.after(0, lambda: self.state_label.config(text="连接断开，重试中...", fg="red"))
+                await asyncio.sleep(3)
 
     def calc_font_and_wrap(self, text):
         n = len(text)
@@ -530,7 +522,6 @@ class ScreenApp:
                 if my_id == current_play_id: self.root.after(0, self.hide)
 
         except Exception as e:
-            print("语音播放失败:", e)
             elapsed = time.time() - start_time
             remain = MIN_DISPLAY_SECONDS - elapsed
             while remain > 0:
