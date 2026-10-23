@@ -1,10 +1,7 @@
-import asyncio
-import json
 import socket
 import threading
 import tkinter as tk
 from tkinter import messagebox
-import websockets
 import os
 import sys
 import requests
@@ -14,13 +11,18 @@ import tempfile
 import time
 import ssl
 import urllib3
+import json
+from apinator import Apinator
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ================= 配置区 =================
-# ！！！把这里换成你 Render 分配的域名（注意是 wss://）
-SERVER = "wss://你的Render域名.onrender.com"
+APP_ID = "4f6d7654-5851-4b86-a0ea-4238a261d49b"
+APP_KEY = "app_0f98d696964886b64f1b12114923b79201fcdf31"
+APP_SECRET = "433c839e1257efd0668ba4dcbdc537958c1bd467b291f46c7df096cff5573586"
+CLUSTER = "us" 
+
 GITHUB_REPO = "LWY2010/shout-server"
 CURRENT_VERSION = "1.0.0" 
 # =========================================
@@ -32,7 +34,6 @@ SINGLE_INSTANCE_PORT = 18889
 DATA_DIR = r"C:\ClassroomShout"
 
 def check_update(exe_name="teacher.exe"):
-    """后台检查并下载更新（弹窗确认版）"""
     log_path = os.path.join(DATA_DIR, "update_log.txt")
     
     def write_log(msg):
@@ -45,21 +46,17 @@ def check_update(exe_name="teacher.exe"):
 
     try:
         time.sleep(5)
-        write_log("="*30)
-        write_log(f"开始检查更新，当前版本: {CURRENT_VERSION}")
         
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
         resp = requests.get(api_url, timeout=10, verify=False)
         
         if resp.status_code != 200:
-            write_log("获取 API 失败，退出更新")
             return
 
         data = resp.json()
         latest_version = data.get("tag_name", "").lstrip("v")
         
         if not latest_version or latest_version == CURRENT_VERSION:
-            write_log("版本一致，无需更新")
             return
 
         download_url = None
@@ -69,25 +66,20 @@ def check_update(exe_name="teacher.exe"):
                 break
         
         if not download_url:
-            write_log(f"未在 Release 中找到 {exe_name}，退出")
             return
 
-        # 弹窗询问用户是否更新
         ans = messagebox.askyesno("发现新版本", f"检测到新版本 {latest_version}，是否立即下载更新？\n（下载期间您可以继续使用）")
         if not ans:
             return
 
         fast_url = download_url.replace("github.com", "ghfast.top/https://github.com")
-        write_log(f"开始下载新版: {fast_url}")
         
         temp_exe = os.path.join(tempfile.gettempdir(), f"new_{exe_name}")
         urllib.request.urlretrieve(fast_url, temp_exe)
         write_log("下载完成")
 
-        # 下载完成后，提示用户重启
         ans2 = messagebox.askyesno("下载完成", "新版本已下载完毕。\n点击“是”将立即重启并应用更新。\n（请注意保存当前操作）")
         if not ans2:
-            write_log("用户取消重启更新")
             return
 
         current_exe_path = sys.executable
@@ -107,7 +99,6 @@ del "%~f0"
         with open(bat_path, "w", encoding="gbk") as f:
             f.write(bat_content)
 
-        write_log("用户确认，执行替换并重启")
         subprocess.Popen(bat_path, shell=True)
         os._exit(0)
 
@@ -171,25 +162,24 @@ class TeacherApp:
             notify_existing_instance()
             sys.exit(0)
             
+        self.apinator = Apinator(
+            app_id=APP_ID,
+            key=APP_KEY,
+            secret=APP_SECRET,
+            cluster=CLUSTER
+        )
+
         threading.Thread(target=check_update, args=("teacher.exe",), daemon=True).start()
 
         self.root = tk.Tk()
         self.root.title(f"办公室喊话 v{CURRENT_VERSION}")
         self.root.geometry("820x780")
 
-        self.ws = None
-        self.loop = None
         self.username = None
         self.room_vars = {}
         self.grade_vars = {}
-        self.status_labels = {}
-        self.online_ids = set()
-
-        self.saved_user = load_saved_user()
-        self.auto_login_pending = bool(self.saved_user)
         self.show_sender_var = tk.BooleanVar(value=False)
 
-        threading.Thread(target=self.connect, daemon=True).start()
         threading.Thread(target=self.listen_single_signal, daemon=True).start()
         self.build_login()
         self.root.mainloop()
@@ -223,29 +213,27 @@ class TeacherApp:
         self.username = None
         self.room_vars.clear()
         self.grade_vars.clear()
-        self.status_labels.clear()
 
         tk.Label(self.root, text="办公室喊话", font=("微软雅黑", 20, "bold")).pack(pady=25)
 
-        if self.saved_user:
-            tk.Label(self.root, text=f"上次登录：{self.saved_user}（正在自动登录...）", font=("微软雅黑", 10), fg="gray").pack()
+        if load_saved_user():
+            tk.Label(self.root, text=f"上次登录：{load_saved_user()}", font=("微软雅黑", 10), fg="gray").pack()
         else:
             tk.Label(self.root, text="请输入您的名字：", font=("微软雅黑", 12)).pack()
 
         self.e_user = tk.Entry(self.root, font=("微软雅黑", 13), width=20)
         self.e_user.pack(pady=8)
-        if self.saved_user: self.e_user.insert(0, self.saved_user)
+        if load_saved_user(): self.e_user.insert(0, load_saved_user())
 
         tk.Button(self.root, text="进入", font=("微软雅黑", 13), width=12, bg="#4CAF50", fg="white", command=self.do_login).pack(pady=15)
 
-        self.status = tk.Label(self.root, text="正在连接服务器...", fg="orange", font=("微软雅黑", 10))
+        self.status = tk.Label(self.root, text="云端直连模式", fg="green", font=("微软雅黑", 10))
         self.status.pack(pady=10)
 
     def build_main(self):
         self.clear()
         self.room_vars.clear()
         self.grade_vars.clear()
-        self.status_labels.clear()
 
         top = tk.Frame(self.root)
         top.pack(fill="x", padx=15, pady=6)
@@ -255,11 +243,6 @@ class TeacherApp:
         opt_row = tk.Frame(self.root)
         opt_row.pack(fill="x", padx=15, pady=2)
         tk.Checkbutton(opt_row, text="在大屏上显示我的名字", variable=self.show_sender_var, font=("微软雅黑", 11)).pack(side="left")
-
-        legend = tk.Frame(self.root)
-        legend.pack(fill="x", padx=15)
-        tk.Label(legend, text="● 在线", fg="green", font=("微软雅黑", 10)).pack(side="left", padx=6)
-        tk.Label(legend, text="● 离线", fg="gray", font=("微软雅黑", 10)).pack(side="left", padx=6)
 
         container = tk.Frame(self.root)
         container.pack(fill="both", expand=True, padx=15, pady=4)
@@ -283,9 +266,8 @@ class TeacherApp:
                 cell = tk.Frame(grid)
                 cell.grid(row=i // 8, column=i % 8, padx=2, pady=1, sticky="w")
                 tk.Checkbutton(cell, text=f"{n}班", variable=var, font=("微软雅黑", 10)).pack(side="left")
-                lab = tk.Label(cell, text="●", fg="gray", font=("微软雅黑", 10))
+                lab = tk.Label(cell, text="●", fg="green", font=("微软雅黑", 10))
                 lab.pack(side="left")
-                self.status_labels[rid] = lab
 
         tk.Label(self.root, text="喊话内容：", font=("微软雅黑", 12)).pack(anchor="w", padx=15, pady=(8, 0))
         self.msg = tk.Text(self.root, height=5, font=("微软雅黑", 12))
@@ -295,7 +277,6 @@ class TeacherApp:
         btn_row.pack(pady=10)
         tk.Button(btn_row, text="发送喊话", font=("微软雅黑", 13), bg="#4CAF50", fg="white", width=14, command=self.send).pack(side="left", padx=6)
         tk.Button(btn_row, text="全不选", font=("微软雅黑", 11), command=self.clear_all).pack(side="left", padx=6)
-        tk.Button(btn_row, text="只选在线", font=("微软雅黑", 11), command=self.select_online).pack(side="left", padx=6)
 
         self.status = tk.Label(self.root, text="就绪", fg="green", font=("微软雅黑", 10))
         self.status.pack(pady=4)
@@ -309,87 +290,18 @@ class TeacherApp:
         for v in self.room_vars.values(): v.set(False)
         for v in self.grade_vars.values(): v.set(False)
 
-    def select_online(self):
-        for rid, var in self.room_vars.items():
-            var.set(rid in self.online_ids)
-
-    def keep_alive(self):
-        """每10分钟发一次心跳，防止 Render 休眠"""
-        while True:
-            time.sleep(600) 
-            if self.ws:
-                try:
-                    asyncio.run_coroutine_threadsafe(
-                        self.ws.send(json.dumps({"action": "ping"})), self.loop
-                    )
-                except Exception:
-                    pass
-
-    def connect(self):
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-        threading.Thread(target=self.keep_alive, daemon=True).start()
-        self.loop.run_until_complete(self._conn())
-
-    async def _conn(self):
-        while True:
-            try:
-                async with websockets.connect(SERVER) as ws:
-                    self.ws = ws
-                    self.root.after(0, lambda: self.status.config(text="已连接", fg="green"))
-                    if self.auto_login_pending and self.saved_user:
-                        self.auto_login_pending = False
-                        self.root.after(500, self._auto_login)
-                    async for raw in ws:
-                        msg = json.loads(raw)
-                        self.root.after(0, lambda m=msg: self.handle(m))
-            except Exception:
-                self.ws = None
-                self.root.after(0, lambda: self.status.config(text="连接断开，重试中...", fg="red"))
-                await asyncio.sleep(3)
-
-    def _auto_login(self):
-        if not self.ws:
-            self.auto_login_pending = True
-            return
-        self.send_json({"action": "teacher_login", "username": self.saved_user})
-
-    def send_json(self, obj):
-        if self.ws:
-            asyncio.run_coroutine_threadsafe(self.ws.send(json.dumps(obj, ensure_ascii=False)), self.loop)
-
-    def handle(self, msg):
-        t = msg.get("type")
-        if t == "login_ok":
-            self.username = msg["username"]
-            self.build_main()
-            self.apply_status(self.online_ids)
-        elif t == "room_status":
-            self.online_ids = set(msg.get("online", []))
-            self.apply_status(self.online_ids)
-        elif t == "sent":
-            self.status.config(text=f"已发送给 {msg.get('count',0)} 个在线班级", fg="blue")
-        elif t == "error":
-            messagebox.showerror("错误", msg.get("msg", "未知错误"))
-
-    def apply_status(self, online_ids):
-        for rid, lab in self.status_labels.items():
-            if not lab.winfo_exists(): continue
-            lab.config(fg="green" if rid in online_ids else "gray")
-
     def do_login(self):
         name = self.e_user.get().strip()
         if not name:
             messagebox.showwarning("提示", "请输入名字")
             return
         save_user(name)
-        self.saved_user = name
-        self.send_json({"action": "teacher_login", "username": name})
+        self.username = name
+        self.build_main()
 
     def do_logout(self):
         if not messagebox.askyesno("确认", "退出登录后需要重新输入名字，确定吗？"): return
         clear_saved_user()
-        self.saved_user = ""
         self.username = None
         self.build_login()
 
@@ -402,13 +314,23 @@ class TeacherApp:
         if not targets:
             messagebox.showwarning("提示", "请先勾选至少一个班级")
             return
-        self.send_json({
-            "action": "shout",
-            "room_ids": targets,
-            "text": text,
-            "show_sender": self.show_sender_var.get()
-        })
-        self.msg.delete("1.0", "end")
+
+        try:
+            payload = {
+                "text": text,
+                "sender": self.username if self.show_sender_var.get() else ""
+            }
+            for room_id in targets:
+                channel_name = f"room-{room_id}"
+                self.apinator.trigger(
+                    "shout",
+                    json.dumps(payload, ensure_ascii=False),
+                    channel=channel_name
+                )
+            self.status.config(text=f"已发送给 {len(targets)} 个班级", fg="blue")
+            self.msg.delete("1.0", "end")
+        except Exception as e:
+            messagebox.showerror("发送失败", f"网络请求失败：{e}")
 
 if __name__ == "__main__":
     TeacherApp()
