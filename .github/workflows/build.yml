@@ -14,11 +14,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # 👈 这里从 3.10 改成了 3.11
+          python-version: '3.10' # 👈 改回 3.10
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller websockets apinator-server requests pystray pillow pygame edge-tts
+          pip install pyinstaller websockets "apinator-server==4.9" requests pystray pillow pygame edge-tts
+          # 👆 明确指定 apinator-server==4.9 (或尝试 5.4.1)
 
       - name: Build teacher.exe
         run: pyinstaller -F -w teacher.py
