@@ -1,0 +1,37 @@
+app = "classroom-shout-xxx"
+primary_region = "hkg" # 香港节点，国内连接延迟低
+kill_signal = "SIGTERM"
+kill_timeout = 5
+
+[build]
+  builder = "dockerfile"
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1 # 保持至少 1 台机器常驻，避免休眠冷启动
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 250
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.http_checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "5s"
+    method = "get"
+    path = "/healthz"
