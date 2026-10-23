@@ -14,7 +14,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11' # 👈 这里从 3.10 改成了 3.11
 
       - name: Install dependencies
         run: |
@@ -26,9 +26,6 @@ jobs:
       - name: Build screen.exe
         run: pyinstaller -F -w --collect-all edge_tts --collect-all pygame --collect-all pystray screen.py
 
-      - name: Build reset_pwd.exe
-        run: pyinstaller -F -w reset_pwd.py
-
       - name: Upload EXE files
         uses: actions/upload-artifact@v4
         with:
@@ -36,4 +33,3 @@ jobs:
           path: |
             dist/teacher.exe
             dist/screen.exe
-            dist/reset_pwd.exe
