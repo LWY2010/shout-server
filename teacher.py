@@ -3,7 +3,7 @@ import json
 import socket
 import threading
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox
 import websockets
 import os
 import sys
@@ -15,20 +15,14 @@ import time
 import ssl
 import urllib3
 
-# 尝试导入 openpyxl (用于读取 Excel)
-try:
-    import openpyxl
-except ImportError:
-    openpyxl = None
-
-# 禁用证书验证警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ================= 配置区 =================
-SERVER = "wss://xvxdrz3k3j.sealosbja.site/__websocket__"
+# ！！！把这里换成你 Render 分配的域名（注意是 wss://）
+SERVER = "wss://你的Render域名.onrender.com"
 GITHUB_REPO = "LWY2010/shout-server"
-CURRENT_VERSION = "1.2.1" 
+CURRENT_VERSION = "1.0.0" 
 # =========================================
 
 GRADES = ["高一", "高二", "高三"]
@@ -38,9 +32,8 @@ SINGLE_INSTANCE_PORT = 18889
 DATA_DIR = r"C:\ClassroomShout"
 
 def check_update(exe_name="teacher.exe"):
-    """后台检查并下载更新"""
+    """后台检查并下载更新（弹窗确认版）"""
     log_path = os.path.join(DATA_DIR, "update_log.txt")
-    bat_log = os.path.join(DATA_DIR, "bat_log.txt")
     
     def write_log(msg):
         try:
@@ -57,7 +50,6 @@ def check_update(exe_name="teacher.exe"):
         
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
         resp = requests.get(api_url, timeout=10, verify=False)
-        write_log(f"API 请求状态码: {resp.status_code}")
         
         if resp.status_code != 200:
             write_log("获取 API 失败，退出更新")
@@ -65,7 +57,6 @@ def check_update(exe_name="teacher.exe"):
 
         data = resp.json()
         latest_version = data.get("tag_name", "").lstrip("v")
-        write_log(f"GitHub 最新版本: {latest_version}")
         
         if not latest_version or latest_version == CURRENT_VERSION:
             write_log("版本一致，无需更新")
@@ -81,40 +72,42 @@ def check_update(exe_name="teacher.exe"):
             write_log(f"未在 Release 中找到 {exe_name}，退出")
             return
 
+        # 弹窗询问用户是否更新
+        ans = messagebox.askyesno("发现新版本", f"检测到新版本 {latest_version}，是否立即下载更新？\n（下载期间您可以继续使用）")
+        if not ans:
+            return
+
         fast_url = download_url.replace("github.com", "ghfast.top/https://github.com")
         write_log(f"开始下载新版: {fast_url}")
         
         temp_exe = os.path.join(tempfile.gettempdir(), f"new_{exe_name}")
         urllib.request.urlretrieve(fast_url, temp_exe)
-        write_log("下载完成，准备替换文件")
+        write_log("下载完成")
+
+        # 下载完成后，提示用户重启
+        ans2 = messagebox.askyesno("下载完成", "新版本已下载完毕。\n点击“是”将立即重启并应用更新。\n（请注意保存当前操作）")
+        if not ans2:
+            write_log("用户取消重启更新")
+            return
 
         current_exe_path = sys.executable
         bat_path = os.path.join(tempfile.gettempdir(), "update_teacher.bat")
         
         bat_content = f"""
 @echo off
-echo [%date% %time%] BAT脚本启动 >> "{bat_log}"
 ping 127.0.0.1 -n 3 > nul
-echo [%date% %time%] 尝试结束进程 >> "{bat_log}"
-taskkill /f /t /im {exe_name} >> "{bat_log}" 2>&1
-ping 127.0.0.1 -n 5 > nul
-echo [%date% %time%] 尝试删除旧文件 >> "{bat_log}"
-del /f /q /a "{current_exe_path}" >> "{bat_log}" 2>&1
-echo [%date% %time%] 尝试移动新文件 >> "{bat_log}"
-move /y "{temp_exe}" "{current_exe_path}" >> "{bat_log}" 2>&1
-if exist "{current_exe_path}" (
-    echo [%date% %time%] 移动成功，清理环境并启动 >> "{bat_log}"
-    set PYINSTALLER_RESET_ENVIRONMENT=1
-    explorer.exe "{current_exe_path}"
-) else (
-    echo [%date% %time%] 移动失败，文件不存在 >> "{bat_log}"
-)
+taskkill /f /im "{exe_name}" > nul 2>&1
+ping 127.0.0.1 -n 3 > nul
+del /f /q "{current_exe_path}" > nul 2>&1
+move /y "{temp_exe}" "{current_exe_path}" > nul 2>&1
+set PYINSTALLER_RESET_ENVIRONMENT=1
+start "" "{current_exe_path}"
 del "%~f0"
 """
         with open(bat_path, "w", encoding="gbk") as f:
             f.write(bat_content)
 
-        write_log("执行替换脚本，程序即将瞬间退出")
+        write_log("用户确认，执行替换并重启")
         subprocess.Popen(bat_path, shell=True)
         os._exit(0)
 
@@ -148,10 +141,6 @@ def ensure_data_dir():
 def get_save_path():
     ensure_data_dir()
     return os.path.join(DATA_DIR, "teacher_user.txt")
-
-def get_roster_path():
-    ensure_data_dir()
-    return os.path.join(DATA_DIR, "roster.txt")
 
 def load_saved_user():
     path = get_save_path()
@@ -195,9 +184,6 @@ class TeacherApp:
         self.grade_vars = {}
         self.status_labels = {}
         self.online_ids = set()
-        
-        self.students = []
-        self.load_local_roster()
 
         self.saved_user = load_saved_user()
         self.auto_login_pending = bool(self.saved_user)
@@ -207,15 +193,6 @@ class TeacherApp:
         threading.Thread(target=self.listen_single_signal, daemon=True).start()
         self.build_login()
         self.root.mainloop()
-
-    def load_local_roster(self):
-        path = get_roster_path()
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    self.students = [line.strip() for line in f if line.strip()]
-            except Exception:
-                pass
 
     def listen_single_signal(self):
         while True:
@@ -310,11 +287,7 @@ class TeacherApp:
                 lab.pack(side="left")
                 self.status_labels[rid] = lab
 
-        msg_head = tk.Frame(self.root)
-        msg_head.pack(fill="x", padx=15, pady=(8, 0))
-        tk.Label(msg_head, text="喊话内容：", font=("微软雅黑", 12)).pack(side="left")
-        tk.Button(msg_head, text="📋 导入/选择学生", font=("微软雅黑", 10), bg="#2196F3", fg="white", command=self.open_roster_window).pack(side="right")
-
+        tk.Label(self.root, text="喊话内容：", font=("微软雅黑", 12)).pack(anchor="w", padx=15, pady=(8, 0))
         self.msg = tk.Text(self.root, height=5, font=("微软雅黑", 12))
         self.msg.pack(fill="x", padx=15)
 
@@ -326,108 +299,6 @@ class TeacherApp:
 
         self.status = tk.Label(self.root, text="就绪", fg="green", font=("微软雅黑", 10))
         self.status.pack(pady=4)
-
-    def open_roster_window(self):
-        win = tk.Toplevel(self.root)
-        win.title("学生花名册")
-        win.geometry("400x500")
-        win.attributes("-topmost", True)
-
-        toolbar = tk.Frame(win)
-        toolbar.pack(fill="x", padx=10, pady=10)
-
-        tk.Button(toolbar, text="导入名单 (.xlsx/.txt/.csv)", command=lambda: self.import_roster(win)).pack(side="left")
-
-        search_frame = tk.Frame(win)
-        search_frame.pack(fill="x", padx=10, pady=5)
-        tk.Label(search_frame, text="搜索：").pack(side="left")
-        search_var = tk.StringVar()
-        search_entry = tk.Entry(search_frame, textvariable=search_var, font=("微软雅黑", 11))
-        search_entry.pack(side="left", fill="x", expand=True)
-        search_entry.focus_set()
-
-        list_frame = tk.Frame(win)
-        list_frame.pack(fill="both", expand=True, padx=10, pady=5)
-
-        scrollbar = tk.Scrollbar(list_frame)
-        scrollbar.pack(side="right", fill="y")
-
-        listbox = tk.Listbox(list_frame, font=("微软雅黑", 12), yscrollcommand=scrollbar.set)
-        listbox.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=listbox.yview)
-
-        def refresh_list(*args):
-            keyword = search_var.get().strip()
-            listbox.delete(0, tk.END)
-            for name in self.students:
-                if keyword in name:
-                    listbox.insert(tk.END, name)
-
-        def on_select(event):
-            selection = listbox.curselection()
-            if selection:
-                name = listbox.get(selection[0])
-                self.msg.insert(tk.END, f"{name} ")
-                self.msg.see(tk.END)  
-                win.destroy() 
-
-        search_var.trace_add("write", refresh_list)
-        listbox.bind("<Double-Button-1>", on_select) 
-        listbox.bind("<Return>", on_select) 
-
-        refresh_list()
-
-    def import_roster(self, parent_win):
-        file_path = filedialog.askopenfilename(
-            parent=parent_win,
-            title="选择学生名单文件",
-            filetypes=[("Excel 文件", "*.xlsx"), ("文本文件", "*.txt"), ("CSV文件", "*.csv"), ("所有文件", "*.*")]
-        )
-        if not file_path:
-            return
-
-        new_names = []
-        file_ext = os.path.splitext(file_path)[1].lower()
-
-        try:
-            if file_ext == ".xlsx":
-                if openpyxl is None:
-                    messagebox.showerror("错误", "缺少 openpyxl 库，无法读取 Excel。请使用 .txt 或 .csv", parent=parent_win)
-                    return
-                
-                # 读取 Excel
-                wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-                sheet = wb.active # 默认读取第一个表
-                for row in sheet.iter_rows(values_only=True):
-                    if row and row[0]: # 读取第一列，且不为空
-                        name = str(row[0]).strip()
-                        if name and name != "姓名" and name != "名字":
-                            new_names.append(name)
-                wb.close()
-
-            else:
-                # 读取文本或 CSV
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                    content = content.replace(",", "\n").replace("，", "\n")
-                    new_names = [line.strip() for line in content.splitlines() if line.strip()]
-
-            if not new_names:
-                messagebox.showwarning("提示", "没有读取到有效的名字", parent=parent_win)
-                return
-
-            self.students = new_names
-            
-            with open(get_roster_path(), "w", encoding="utf-8") as f:
-                for name in self.students:
-                    f.write(name + "\n")
-
-            messagebox.showinfo("成功", f"成功导入 {len(self.students)} 名学生！\n名单已自动保存。", parent=parent_win)
-            parent_win.destroy()
-            self.open_roster_window()
-
-        except Exception as e:
-            messagebox.showerror("错误", f"导入失败：{e}\n（如果文件正在被 Excel 打开，请先关闭 Excel）", parent=parent_win)
 
     def toggle_grade(self, grade):
         val = self.grade_vars[grade].get()
@@ -442,9 +313,22 @@ class TeacherApp:
         for rid, var in self.room_vars.items():
             var.set(rid in self.online_ids)
 
+    def keep_alive(self):
+        """每10分钟发一次心跳，防止 Render 休眠"""
+        while True:
+            time.sleep(600) 
+            if self.ws:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self.ws.send(json.dumps({"action": "ping"})), self.loop
+                    )
+                except Exception:
+                    pass
+
     def connect(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
+        threading.Thread(target=self.keep_alive, daemon=True).start()
         self.loop.run_until_complete(self._conn())
 
     async def _conn(self):
