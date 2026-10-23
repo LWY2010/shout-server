@@ -21,14 +21,14 @@ import subprocess
 import ssl
 import urllib3
 
-# 禁用证书验证警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ================= 配置区 =================
-SERVER = "wss://xvxdrz3k3j.sealosbja.site/__websocket__"
+# ！！！把这里换成你 Render 分配的域名（注意是 wss://）
+SERVER = "wss://你的Render域名.onrender.com"
 GITHUB_REPO = "LWY2010/shout-server"
-CURRENT_VERSION = "1.2.1" 
+CURRENT_VERSION = "1.0.0" 
 # =========================================
 
 VOICE = "zh-CN-XiaoxiaoNeural"
@@ -48,7 +48,7 @@ SINGLE_INSTANCE_PORT = 18888
 DATA_DIR = r"C:\ClassroomShout"
 
 def check_update(exe_name="screen.exe"):
-    """后台检查并下载更新"""
+    """后台检查并下载更新（弹窗确认版）"""
     log_path = os.path.join(DATA_DIR, "update_log.txt")
     bat_log = os.path.join(DATA_DIR, "bat_log.txt")
     
@@ -62,23 +62,17 @@ def check_update(exe_name="screen.exe"):
 
     try:
         time.sleep(5) 
-        write_log("="*30)
-        write_log(f"开始检查更新，当前版本: {CURRENT_VERSION}")
         
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
         resp = requests.get(api_url, timeout=10, verify=False)
-        write_log(f"API 请求状态码: {resp.status_code}")
         
         if resp.status_code != 200:
-            write_log("获取 API 失败，退出更新")
             return
 
         data = resp.json()
         latest_version = data.get("tag_name", "").lstrip("v")
-        write_log(f"GitHub 最新版本: {latest_version}")
         
         if not latest_version or latest_version == CURRENT_VERSION:
-            write_log("版本一致，无需更新")
             return
 
         download_url = None
@@ -88,49 +82,46 @@ def check_update(exe_name="screen.exe"):
                 break
         
         if not download_url:
-            write_log(f"未在 Release 中找到 {exe_name}，退出")
+            return
+
+        # 弹窗询问用户
+        ans = messagebox.askyesno("发现新版本", f"检测到新版本 {latest_version}，是否立即下载更新？\n（教室大屏建议点击“是”）")
+        if not ans:
             return
 
         fast_url = download_url.replace("github.com", "ghfast.top/https://github.com")
-        write_log(f"开始下载新版: {fast_url}")
         
         temp_exe = os.path.join(tempfile.gettempdir(), f"new_{exe_name}")
         urllib.request.urlretrieve(fast_url, temp_exe)
         write_log("下载完成，准备替换文件")
 
+        # 提示重启
+        ans2 = messagebox.askyesno("下载完成", "新版本已下载完毕。\n点击“是”将立即重启并应用更新。")
+        if not ans2:
+            return
+
         current_exe_path = sys.executable
         bat_path = os.path.join(tempfile.gettempdir(), "update_screen.bat")
         
-        # 修复环境冲突和乱码的 BAT 脚本
         bat_content = f"""
 @echo off
-echo [%date% %time%] BAT脚本启动 >> "{bat_log}"
 ping 127.0.0.1 -n 3 > nul
-echo [%date% %time%] 尝试结束进程 >> "{bat_log}"
-taskkill /f /t /im {exe_name} >> "{bat_log}" 2>&1
-ping 127.0.0.1 -n 5 > nul
-echo [%date% %time%] 尝试删除旧文件 >> "{bat_log}"
-del /f /q /a "{current_exe_path}" >> "{bat_log}" 2>&1
-echo [%date% %time%] 尝试移动新文件 >> "{bat_log}"
-move /y "{temp_exe}" "{current_exe_path}" >> "{bat_log}" 2>&1
-if exist "{current_exe_path}" (
-    echo [%date% %time%] 移动成功，清理环境并启动 >> "{bat_log}"
-    set PYINSTALLER_RESET_ENVIRONMENT=1
-    explorer.exe "{current_exe_path}"
-) else (
-    echo [%date% %time%] 移动失败，文件不存在 >> "{bat_log}"
-)
+taskkill /f /im "{exe_name}" > nul 2>&1
+ping 127.0.0.1 -n 3 > nul
+del /f /q "{current_exe_path}" > nul 2>&1
+move /y "{temp_exe}" "{current_exe_path}" > nul 2>&1
+set PYINSTALLER_RESET_ENVIRONMENT=1
+start "" "{current_exe_path}"
 del "%~f0"
 """
         with open(bat_path, "w", encoding="gbk") as f:
             f.write(bat_content)
 
-        write_log("执行替换脚本，程序即将瞬间退出")
         subprocess.Popen(bat_path, shell=True)
         os._exit(0)
 
     except Exception as e:
-        write_log(f"发生异常: {str(e)}")
+        pass
 
 def try_acquire_single_instance():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -282,7 +273,7 @@ class ScreenApp:
         self.root.bind("<Escape>", lambda e: self.hide())
 
         threading.Thread(target=run_tray, args=(self,), daemon=True).start()
-        threading.Thread(target=self.listen, daemon=True).start()
+        threading.Thread(target=self.connect, daemon=True).start()
         threading.Thread(target=self.listen_single_signal, daemon=True).start()
 
         self.root.mainloop()
@@ -407,10 +398,23 @@ class ScreenApp:
         if self.state_label and self.state_label.winfo_exists():
             self.state_label.config(text="✅ 已连接服务器", fg="green")
 
-    def listen(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self._listen())
+    def keep_alive(self):
+        """每10分钟发一次心跳，防止 Render 休眠"""
+        while True:
+            time.sleep(600)
+            if self.ws:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self.ws.send(json.dumps({"action": "ping"})), self.loop
+                    )
+                except Exception:
+                    pass
+
+    def connect(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        threading.Thread(target=self.keep_alive, daemon=True).start()
+        self.loop.run_until_complete(self._listen())
 
     async def _listen(self):
         while True:
